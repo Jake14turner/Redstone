@@ -36,6 +36,7 @@ placement_mode = "redstone"  # or "power"
 lasso_start = None
 lasso_end = None
 selected_cells = set()
+item_menu_anim = 0.0  # 0.0 = hidden, 1.0 = fully visible
 
 
 # Button positions
@@ -64,47 +65,158 @@ menu_icon_animation = 0.0  # For smooth transitions
 
 def lerp(a, b, t):
     return a + (b - a) * t  # Linear interpolation
+item_menu_anim = 0.0  # 0.0 = hidden, 1.0 = fully visible
+
 
 # Add these at the top with other initializations
+rotation = 0
 hover_states = {0: False, 1: False, 2: False}
 text_scales = [1.0, 1.0, 1.0]
 TARGET_SCALE = 1.15  # Slightly more subtle
 SCALE_SPEED = 0.2    # Faster but still smooth
 GATE_DEFINITIONS = {
-    "or": {
+    "0-or": {
         "size": (3, 2),
         "inputs": [(0, 0), (2, 0)],
         "output": (1, 1),
         "logic": "or"
     },
-    "and": {
+    "1-or": {
+        "size": (2, 3),
+        "inputs": [(0, 0), (0, 2)],
+        "output": (1, 1),
+        "logic": "or"
+    },
+    "2-or": {
+        "size": (3, 2),
+        "inputs": [(0, 1), (2, 1)],
+        "output": (1, 0),
+        "logic": "or"
+    },
+    "3-or": {
+        "size": (2, 3),
+        "inputs": [(1, 0), (1, 2)],
+        "output": (0, 1),
+        "logic": "or"
+    },
+    "0-and": {
         "size": (3, 2),
         "inputs": [(0, 0), (2, 0)],
         "output": (1, 1),
         "logic": "and"
     },
-    "not": {
+    "1-and": {
+        "size": (2, 3),
+        "inputs": [(0, 0), (0, 2)],
+        "output": (1, 1),
+        "logic": "and"
+    },
+    "2-and": {
+        "size": (3, 2),
+        "inputs": [(0, 1), (2, 1)],
+        "output": (1, 0),
+        "logic": "and"
+    },
+    "3-and": {
+        "size": (2, 3),
+        "inputs": [(1, 0), (1, 2)],
+        "output": (0, 1),
+        "logic": "and"
+    },
+    "0-not": {
         "size": (1, 2),
         "inputs": [(0, 0)],
         "output": (0, 1),
         "logic": "not"
     },
-    "xor": {
+    "1-not": {
+        "size": (2, 1),
+        "inputs": [(1, 0)],
+        "output": (0, 0),
+        "logic": "not"
+    },
+    "2-not": {
+        "size": (1, 2),
+        "inputs": [(0, 1)],
+        "output": (0, 0),
+        "logic": "not"
+    },
+    "3-not": {
+        "size": (2, 1),
+        "inputs": [(0, 0)],
+        "output": (1, 0),
+        "logic": "not"
+    },
+    "0-xor": {
         "size": (3, 2),
         "inputs": [(0, 0), (2, 0)],
         "output": (1, 1),
         "logic": "xor"
     },
-    "nor": {
+    "1-xor": {
+        "size": (2, 3),
+        "inputs": [(0, 0), (0, 2)],
+        "output": (1, 1),
+        "logic": "xor"
+    },
+    "2-xor": {
+        "size": (3, 2),
+        "inputs": [(0, 1), (2, 1)],
+        "output": (1, 0),
+        "logic": "xor"
+    },
+    "3-xor": {
+        "size": (2, 3),
+        "inputs": [(1, 0), (1, 2)],
+        "output": (0, 1),
+        "logic": "xor"
+    },
+    "0-nor": {
         "size": (3, 2),
         "inputs": [(0, 0), (2, 0)],
         "output": (1, 1),
         "logic": "nor"
     },
-    "nand": {
+    "1-nor": {
+        "size": (2, 3),
+        "inputs": [(0, 0), (0, 2)],
+        "output": (1, 1),
+        "logic": "nor"
+    },
+    "2-nor": {
+        "size": (3, 2),
+        "inputs": [(0, 1), (2, 1)],
+        "output": (1, 0),
+        "logic": "nor"
+    },
+    "3-nor": {
+        "size": (2, 3),
+        "inputs": [(1, 0), (1, 2)],
+        "output": (0, 1),
+        "logic": "nor"
+    },
+    "0-nand": {
         "size": (3, 2),
         "inputs": [(0, 0), (2, 0)],
         "output": (1, 1),
+        "logic": "nand"
+    },
+    "1-nand": {
+        "size": (2, 3),
+        "inputs": [(0, 0), (0, 2)],
+        "output": (1, 1),
+        "logic": "nand"
+    },
+    "2-nand": {
+        "size": (3, 2),
+        "inputs": [(0, 1), (2, 1)],
+        "output": (1, 0),
+        "logic": "nand"
+    },
+    "3-nand": {
+        "size": (2, 3),
+        "inputs": [(1, 0), (1, 2)],
+        "output": (0, 1),
         "logic": "nand"
     },
 }
@@ -122,8 +234,9 @@ gold_light = (253, 255, 117)
 glow_colors = [(*gold_light, alpha) for alpha in range(50, 0, -10)]
 
 
-def place_gate(x, y, gate_type):
-    definition = GATE_DEFINITIONS[gate_type]
+def place_gate(x, y, gate_type, rotation):
+    typeOfGate = f"{rotation}-{gate_type}"
+    definition = GATE_DEFINITIONS[typeOfGate]
     w, h = definition["size"]
 
     # Check if space is available
@@ -142,7 +255,7 @@ def place_gate(x, y, gate_type):
             gy = y + dy
             grid[gy][gx] = {
                 "type": "gate",
-                "gate_type": gate_type,
+                "gate_type": typeOfGate,
                 "local_pos": (dx, dy),
                 "powered": False
             }
@@ -356,6 +469,8 @@ def propagate_from(x, y):
                         cell["powered"] = True
                     neighbors = [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]
                     stack.extend(neighbors)
+
+                    
 def draw_grid():
     propagate_power()  # Recalculate power state
 
@@ -393,82 +508,11 @@ def draw_grid():
                     output_offset = gate_def.get("output", (-1, -1))
 
                     # Only draw the "U" shape: inputs, output, and vertical sides
-                    u_shape = input_offsets + [output_offset, (0,1), (2,1)]
-                    if cell["gate_type"] == "not":
+                    u_shape = input_offsets + [output_offset]
+                    if cell["gate_type"] == "0-not" or cell["gate_type"] == "1-not" or cell["gate_type"] == "2-not" or cell["gate_type"] == "3-not":
                         not_shape = input_offsets + [output_offset]
                         if local_pos in not_shape:
-                            color = (150, 0, 150) if not cell["powered"] else (255, 0, 255)
-                            if local_pos in input_offsets:
-                                color = BLUE
-                            elif local_pos == output_offset:
-                                color = YELLOW
-                            pygame.draw.rect(screen, color, rect)
-                            label_text = ""
-                            if local_pos in input_offsets:
-                                label_text = "IN"
-                            elif local_pos == output_offset:
-                                label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
-                    elif cell["gate_type"] == "xor":
-                        if local_pos in u_shape:
-                            color = (0, 200, 200) if not cell["powered"] else (0, 255, 255)
-                            if local_pos in input_offsets:
-                                color = BLUE
-                            elif local_pos == output_offset:
-                                color = YELLOW
-                            pygame.draw.rect(screen, color, rect)
-                            label_text = ""
-                            if local_pos in input_offsets:
-                                label_text = "IN"
-                            elif local_pos == output_offset:
-                                label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
-                    elif cell["gate_type"] == "nor":
-                        if local_pos in u_shape:
-                            color = (150, 100, 255) if not cell["powered"] else (200, 150, 255)
-                            if local_pos in input_offsets:
-                                color = BLUE
-                            elif local_pos == output_offset:
-                                color = YELLOW
-                            pygame.draw.rect(screen, color, rect)
-                            label_text = ""
-                            if local_pos in input_offsets:
-                                label_text = "IN"
-                            elif local_pos == output_offset:
-                                label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
-                    elif cell["gate_type"] == "nand":
-                        if local_pos in u_shape:
-                            color = (255, 100, 150) if not cell["powered"] else (255, 180, 200)
-                            if local_pos in input_offsets:
-                                color = BLUE
-                            elif local_pos == output_offset:
-                                color = YELLOW
-                            pygame.draw.rect(screen, color, rect)
-                            label_text = ""
-                            if local_pos in input_offsets:
-                                label_text = "IN"
-                            elif local_pos == output_offset:
-                                label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
-                    else:
-                        if local_pos in u_shape:
-                            if cell["powered"]:
-                                color = GREEN
-                            else:
-                                color = GRAY
-                            if local_pos in input_offsets:
-                                color = BLUE
-                            elif local_pos == output_offset:
-                                color = YELLOW
+                            color = (30, 30, 180) if not cell["powered"] else (90, 140, 255)  # Dark blue → Soft electric blue
                             pygame.draw.rect(screen, color, rect)
                             label_text = ""
                             if local_pos in input_offsets:
@@ -479,8 +523,74 @@ def draw_grid():
                                 label = font.render(label_text, True, WHITE)
                                 screen.blit(label, (rect.x + 2, rect.y + 2))
 
-    # --- LASSO RECTANGLE ---
-    if placement_mode == "lasso" and lasso_start and lasso_end:
+                    elif cell["gate_type"] == "0-xor" or cell["gate_type"] == "1-xor" or cell["gate_type"] == "2-xor" or cell["gate_type"] == "3-xor":
+                        if local_pos in u_shape:
+                            color = (255, 255, 0) if not cell["powered"] else (0, 200, 200)  # Yellow → Bright cyan
+                            pygame.draw.rect(screen, color, rect)
+                            label_text = ""
+                            if local_pos in input_offsets:
+                                label_text = "IN"
+                            elif local_pos == output_offset:
+                                label_text = "OUT"
+                            if label_text:
+                                label = font.render(label_text, True, WHITE)
+                                screen.blit(label, (rect.x + 2, rect.y + 2))
+
+                    elif cell["gate_type"] == "0-nor" or cell["gate_type"] == "1-nor" or cell["gate_type"] == "2-nor" or cell["gate_type"] == "3-nor":
+                        if local_pos in u_shape:
+                            color = (130, 0, 0) if not cell["powered"] else (255, 80, 120)  # Deep red → Bright pink
+                            pygame.draw.rect(screen, color, rect)
+                            label_text = ""
+                            if local_pos in input_offsets:
+                                label_text = "IN"
+                            elif local_pos == output_offset:
+                                label_text = "OUT"
+                            if label_text:
+                                label = font.render(label_text, True, WHITE)
+                                screen.blit(label, (rect.x + 2, rect.y + 2))
+
+                    elif cell["gate_type"] == "0-nand" or cell["gate_type"] == "1-nand" or cell["gate_type"] == "2-nand" or cell["gate_type"] == "3-nand":
+                        if local_pos in u_shape:
+                            color = (90, 0, 140) if not cell["powered"] else (200, 0, 255)  # Deep purple → Neon violet
+                            pygame.draw.rect(screen, color, rect)
+                            label_text = ""
+                            if local_pos in input_offsets:
+                                label_text = "IN"
+                            elif local_pos == output_offset:
+                                label_text = "OUT"
+                            if label_text:
+                                label = font.render(label_text, True, WHITE)
+                                screen.blit(label, (rect.x + 2, rect.y + 2))
+
+                    elif cell["gate_type"] == "0-or" or cell["gate_type"] == "1-or" or cell["gate_type"] == "2-or" or cell["gate_type"] == "3-or":
+                        if local_pos in u_shape:
+                            color = (255, 130, 0) if not cell["powered"] else (255, 200, 0)  # Reddish orange → Golden yellow
+                            pygame.draw.rect(screen, color, rect)
+                            label_text = ""
+                            if local_pos in input_offsets:
+                                label_text = "IN"
+                            elif local_pos == output_offset:
+                                label_text = "OUT"
+                            if label_text:
+                                label = font.render(label_text, True, WHITE)
+                                screen.blit(label, (rect.x + 2, rect.y + 2)) 
+
+                    elif cell["gate_type"] == "0-and" or cell["gate_type"] == "1-and" or cell["gate_type"] == "2-and" or cell["gate_type"] == "3-and":
+                        if local_pos in u_shape:
+                            color = (0, 120, 0) if not cell["powered"] else (0, 255, 0)  # Forest green → Bright green
+                            pygame.draw.rect(screen, color, rect)
+                            label_text = ""
+                            if local_pos in input_offsets:
+                                label_text = "IN"
+                            elif local_pos == output_offset:
+                                label_text = "OUT"
+                            if label_text:
+                                label = font.render(label_text, True, WHITE)
+                                screen.blit(label, (rect.x + 2, rect.y + 2))
+
+
+    # --- SELECT RECTANGLE ---
+    if placement_mode == "select" and lasso_start and lasso_end:
         x1, y1 = lasso_start
         x2, y2 = lasso_end
         grid_x1 = round((x1 * GRID_SIZE - camera_x) * zoom)
@@ -531,28 +641,64 @@ def draw_grid():
     # Item menu background
     pygame.draw.rect(screen, (60, 60, 60), item_menu_rect)
 
-    # Buttons for redstone, power, OR gate, etc.
-    pygame.draw.rect(screen, (200, 50, 50) if placement_mode == "redstone" else (100, 100, 100), redstone_button_rect)
-    pygame.draw.rect(screen, (50, 200, 50) if placement_mode == "power" else (100, 100, 100), power_button_rect)
-    pygame.draw.rect(screen, (50, 50, 200) if placement_mode == "or" else (100, 100, 100), or_button_rect)
-    pygame.draw.rect(screen, (200, 200, 50) if placement_mode == "and" else (100, 100, 100), and_button_rect)
-    pygame.draw.rect(screen, (200, 50, 200) if placement_mode == "not" else (100, 100, 100), not_button_rect)
-    pygame.draw.rect(screen, (200, 50, 50) if placement_mode == "delete" else (100, 100, 100), delete_button_rect)
-    pygame.draw.rect(screen, (50, 200, 200) if placement_mode == "xor" else (100, 100, 100), xor_button_rect)
-    screen.blit(font.render("Redstone", True, (255, 255, 255)), (redstone_button_rect.x + 5, redstone_button_rect.y + 5))
-    screen.blit(font.render("Power", True, (255, 255, 255)), (power_button_rect.x + 5, power_button_rect.y + 5))
-    screen.blit(font.render("OR Gate", True, (255, 255, 255)), (or_button_rect.x + 5, or_button_rect.y + 5))
-    screen.blit(font.render("AND Gate", True, (255, 255, 255)), (and_button_rect.x + 5, and_button_rect.y + 5))
-    screen.blit(font.render("NOT Gate", True, (255, 255, 255)), (not_button_rect.x + 5, not_button_rect.y + 5))
-    screen.blit(font.render("Delete", True, (255, 255, 255)), (delete_button_rect.x + 5, delete_button_rect.y + 5))
-    screen.blit(font.render("XOR Gate", True, (255, 255, 255)), (xor_button_rect.x + 5, xor_button_rect.y + 5))
-    pygame.draw.rect(screen, (150, 100, 255) if placement_mode == "nor" else (100, 100, 100), nor_button_rect)
-    pygame.draw.rect(screen, (255, 100, 150) if placement_mode == "nand" else (100, 100, 100), nand_button_rect)
-    screen.blit(font.render("NOR Gate", True, (255, 255, 255)), (nor_button_rect.x + 5, nor_button_rect.y + 5))
-    screen.blit(font.render("NAND Gate", True, (255, 255, 255)), (nand_button_rect.x + 5, nand_button_rect.y + 5))
-    pygame.draw.rect(screen, (100, 200, 255) if placement_mode == "lasso" else (100, 100, 100), lasso_button_rect)
-    screen.blit(font.render("Lasso", True, (255, 255, 255)), (lasso_button_rect.x + 5, lasso_button_rect.y + 5))        
+    # --- ITEM MENU BUTTONS ---
 
+    GATE_COLORS = {
+        "redstone": (255, 0, 0),
+        "power": (255, 255, 0),
+        "or": (255, 130, 0),
+        "and": (0, 255, 0),
+        "not": (30, 30, 180),
+        "xor": (0, 255, 255),
+        "nor": (255, 80, 120),
+        "nand": (200, 0, 255),
+        "delete": (255, 80, 80),
+        "select": (100, 200, 255),
+    }
+
+    button_defs = [
+        ("redstone", redstone_button_rect, "Redstone"),
+        ("power", power_button_rect, "Power"),
+        ("or", or_button_rect, "OR"),
+        ("and", and_button_rect, "AND"),
+        ("not", not_button_rect, "NOT"),
+        ("xor", xor_button_rect, "XOR"),
+        ("nor", nor_button_rect, "NOR"),
+        ("nand", nand_button_rect, "NAND"),
+        ("select", lasso_button_rect, "Lasso"),
+        ("delete", delete_button_rect, "Delete"),
+    ]
+
+    mouse_pos = pygame.mouse.get_pos()
+    for mode, rect, label in button_defs:
+        is_hover = rect.collidepoint(mouse_pos)
+        is_active = (
+            (mode == "redstone" and placement_mode == "redstone") or
+            (mode == "power" and placement_mode == "power") or
+            (mode == "or" and placement_mode == "or") or
+            (mode == "and" and placement_mode == "and") or
+            (mode == "not" and placement_mode == "not") or
+            (mode == "xor" and placement_mode == "xor") or
+            (mode == "nor" and placement_mode == "nor") or
+            (mode == "nand" and placement_mode == "nand") or
+            (mode == "delete" and placement_mode == "delete") or
+            (mode == "select" and placement_mode == "select")
+        )
+        base_color = GATE_COLORS.get(mode, (255, 255, 255))
+        # Pastel/glow color for hover/active
+        pastel = tuple(min(255, int(c * 0.6 + 255 * 0.4)) for c in base_color)
+        draw_color = pastel if (is_hover or is_active) else (0, 0, 0)
+        # Inflate softly if hovered/active
+        draw_rect = rect.inflate(10, 8) if (is_hover or is_active) else rect
+        pygame.draw.rect(screen, draw_color, draw_rect, border_radius=8)
+        # Draw label (always white, auto-fit)
+        # Use a slightly smaller font for long labels
+        font_size = 24 if len(label) > 8 else 28
+        btn_font = pygame.font.Font(None, font_size)
+        text_surf = btn_font.render(label, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(center=draw_rect.center)
+        screen.blit(text_surf, text_rect)
+    
     # Side menu
     if menu_open:
         pygame.draw.rect(screen, (50, 50, 50), side_menu_rect)
@@ -567,9 +713,19 @@ while running:
     else:
         draw_grid()
 
+    # Animate item menu slide-in
+    mouse_x, _ = pygame.mouse.get_pos()
+    show_menu = mouse_x > WIDTH - 60  # Show menu if mouse near right edge
+    target_anim = 1.0 if show_menu else 0.0
+    item_menu_anim += (target_anim - item_menu_anim) * 0.3  # Smooth lerp
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_r:
+                rotation = rotation + 1 if rotation < 3 else 0
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mx, my = event.pos
@@ -619,40 +775,50 @@ while running:
                 if redstone_button_rect.collidepoint(mx, my):
                     placement_mode = "redstone"
                     clear_lasso_selection()
+                    continue
                 elif power_button_rect.collidepoint(mx, my):
                     placement_mode = "power"
                     clear_lasso_selection()
+                    continue
                 if or_button_rect.collidepoint(mx, my):
                     placement_mode = "or"
                     clear_lasso_selection()
+                    continue
                 elif and_button_rect.collidepoint(mx, my):
                     placement_mode = "and"
                     clear_lasso_selection()
+                    continue
                 elif not_button_rect.collidepoint(mx, my):
                     placement_mode = "not"
                     clear_lasso_selection()
-                elif delete_button_rect.collidepoint(mx, my):
-                    placement_mode = "delete"
-                    clear_lasso_selection()
+                    continue
+               
                 elif xor_button_rect.collidepoint(mx, my):
                     placement_mode = "xor"
                     clear_lasso_selection()
+                    continue
                 elif nor_button_rect.collidepoint(mx, my):
                     placement_mode = "nor"
                     clear_lasso_selection()
+                    continue
                 elif nand_button_rect.collidepoint(mx, my):
                     placement_mode = "nand"
                     clear_lasso_selection()
+                    continue
                 elif lasso_button_rect.collidepoint(mx, my):
-                    placement_mode = "lasso"
+                    placement_mode = "select"
                     # Do NOT clear selection here, so user can use popup!
+                elif delete_button_rect.collidepoint(mx, my):
+                    placement_mode = "delete"
+                    clear_lasso_selection()
+                    continue
 
                 elif menu_open and exit_button_rect.collidepoint(mx, my):  # Clicked "Exit"
                     state = MENU
                     menu_open = False
 
                 # --- LASSO TOOL START ---
-                if placement_mode == "lasso" and event.button == 1:
+                if placement_mode == "select" and event.button == 1:
                     lasso_start = (int((mx / zoom + camera_x) // GRID_SIZE),
                                    int((my / zoom + camera_y) // GRID_SIZE))
                     lasso_end = lasso_start
@@ -667,17 +833,17 @@ while running:
                         elif placement_mode == "power":
                             grid[y][x] = {"type": "power", "powered": True}
                         elif placement_mode == "or":
-                            place_gate(x, y, "or")
+                            place_gate(x, y, "or", rotation)
                         elif placement_mode == "and":
-                            place_gate(x, y, "and")
+                            place_gate(x, y, "and", rotation)
                         elif placement_mode == "not":
-                            place_gate(x, y, "not")
+                            place_gate(x, y, "not", rotation)
                         elif placement_mode == "xor":
-                            place_gate(x, y, "xor")
+                            place_gate(x, y, "xor", rotation)
                         elif placement_mode == "nor":
-                            place_gate(x, y, "nor")
+                            place_gate(x, y, "nor", rotation)
                         elif placement_mode == "nand":
-                            place_gate(x, y, "nand")
+                            place_gate(x, y, "nand", rotation)
                         elif placement_mode == "delete":
                             cell = grid[y][x]
                             if cell["type"] == "gate":
@@ -709,7 +875,7 @@ while running:
 
         # --- LASSO TOOL DRAG ---
         elif event.type == pygame.MOUSEMOTION:
-            if placement_mode == "lasso" and lasso_start:
+            if placement_mode == "select" and lasso_start:
                 lasso_end = (int((event.pos[0] / zoom + camera_x) // GRID_SIZE),
                              int((event.pos[1] / zoom + camera_y) // GRID_SIZE))
             elif panning:
@@ -721,7 +887,7 @@ while running:
 
         # --- LASSO TOOL END ---
         elif event.type == pygame.MOUSEBUTTONUP:
-            if placement_mode == "lasso" and event.button == 1 and lasso_start:
+            if placement_mode == "select" and event.button == 1 and lasso_start:
                 x1, y1 = lasso_start
                 x2, y2 = lasso_end
                 x_min, x_max = sorted([x1, x2])
@@ -739,5 +905,4 @@ while running:
     clock.tick(60)
 
 
-pygame.quit()
 pygame.quit()
