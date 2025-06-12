@@ -561,14 +561,28 @@ def draw_grid():
                         if local_pos in not_shape:
                             color = (30, 30, 180) if not cell["powered"] else (90, 140, 255)
                             pygame.draw.rect(screen, color, rect)
-                            label_text = ""
+                            # Both arrows point in the output direction
+                            arrow_color_in = (80, 180, 255)
+                            arrow_color_out = (255, 220, 80)
+                            arrow_w = max(4, rect.width // 3)
+                            arrow_h = max(6, rect.height // 2)
+                            cx, cy = rect.center
+                            rot = int(cell["gate_type"].split('-')[0])
+                            # Arrow points for the output direction
+                            if rot == 0:  # Down
+                                points = [(cx, rect.bottom - 3), (cx - arrow_w, rect.bottom - arrow_h), (cx + arrow_w, rect.bottom - arrow_h)]
+                            elif rot == 1:  # Right
+                                points = [(rect.right - 3, cy), (rect.right - arrow_h, cy - arrow_w), (rect.right - arrow_h, cy + arrow_w)]
+                            elif rot == 2:  # Up
+                                points = [(cx, rect.top + 3), (cx - arrow_w, rect.top + arrow_h), (cx + arrow_w, rect.top + arrow_h)]
+                            elif rot == 3:  # Left
+                                points = [(rect.left + 3, cy), (rect.left + arrow_h, cy - arrow_w), (rect.left + arrow_h, cy + arrow_w)]
+                            # Draw arrow for input cell(s)
                             if local_pos in input_offsets:
-                                label_text = "IN"
-                            elif local_pos == output_offset:
-                                label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
+                                pygame.draw.polygon(screen, arrow_color_in, points)
+                            # Draw arrow for output cell
+                            if local_pos == output_offset:
+                                pygame.draw.polygon(screen, arrow_color_out, points)
 
                     elif cell["gate_type"] in ["0-xor", "1-xor", "2-xor", "3-xor"]:
                         if local_pos in u_shape:
@@ -579,9 +593,7 @@ def draw_grid():
                                 label_text = "IN"
                             elif local_pos == output_offset:
                                 label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
+                        
 
                     elif cell["gate_type"] in ["0-nor", "1-nor", "2-nor", "3-nor"]:
                         if local_pos in u_shape:
@@ -592,9 +604,7 @@ def draw_grid():
                                 label_text = "IN"
                             elif local_pos == output_offset:
                                 label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
+                        
 
                     elif cell["gate_type"] in ["0-nand", "1-nand", "2-nand", "3-nand"]:
                         if local_pos in u_shape:
@@ -605,9 +615,7 @@ def draw_grid():
                                 label_text = "IN"
                             elif local_pos == output_offset:
                                 label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
+                        
 
                     elif cell["gate_type"] in ["0-or", "1-or", "2-or", "3-or"]:
                         if local_pos in u_shape:
@@ -618,9 +626,7 @@ def draw_grid():
                                 label_text = "IN"
                             elif local_pos == output_offset:
                                 label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
+                        
 
                     elif cell["gate_type"] in ["0-and", "1-and", "2-and", "3-and"]:
                         if local_pos in u_shape:
@@ -631,9 +637,7 @@ def draw_grid():
                                 label_text = "IN"
                             elif local_pos == output_offset:
                                 label_text = "OUT"
-                            if label_text:
-                                label = font.render(label_text, True, WHITE)
-                                screen.blit(label, (rect.x + 2, rect.y + 2))
+                        
 
     # --- SELECT RECTANGLE ---
     if placement_mode == "select" and lasso_start and lasso_end:
@@ -646,6 +650,54 @@ def draw_grid():
         rect = pygame.Rect(min(grid_x1, grid_x2), min(grid_y1, grid_y2),
                            abs(grid_x2 - grid_x1) + GRID_SIZE, abs(grid_y2 - grid_y1) + GRID_SIZE)
         pygame.draw.rect(screen, (100, 200, 255), rect, 2)
+    
+
+       # --- PLACEMENT OUTLINE PREVIEW ---
+    if placement_mode in ["redstone", "power", "or", "and", "not", "xor", "nor", "nand"]:
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
+        grid_y = int((mouse_y / zoom + camera_y) // GRID_SIZE)
+        if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
+            if placement_mode in ["redstone", "power"]:
+                rect = pygame.Rect(
+                    round((grid_x * GRID_SIZE - camera_x) * zoom),
+                    round((grid_y * GRID_SIZE - camera_y) * zoom),
+                    round(GRID_SIZE * zoom),
+                    round(GRID_SIZE * zoom)
+                )
+                pygame.draw.rect(screen, (255, 248, 189), rect, 3)  # Yellow outline
+            else:
+                # For gates, show the actual U-shape (inputs and output)
+                typeOfGate = f"{rotation}-{placement_mode}"
+                gate_def = GATE_DEFINITIONS.get(typeOfGate)
+                if gate_def:
+                    w, h = gate_def["size"]
+                    input_offsets = gate_def["inputs"]
+                    output_offset = gate_def["output"]
+                    # Draw input cells
+                    for dx, dy in input_offsets:
+                        gx = grid_x + dx
+                        gy = grid_y + dy
+                        if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                            rect = pygame.Rect(
+                                round((gx * GRID_SIZE - camera_x) * zoom),
+                                round((gy * GRID_SIZE - camera_y) * zoom),
+                                round(GRID_SIZE * zoom),
+                                round(GRID_SIZE * zoom)
+                            )
+                            pygame.draw.rect(screen, (0, 255, 0), rect, 3)  # Green for inputs
+                    # Draw output cell
+                    out_gx = grid_x + output_offset[0]
+                    out_gy = grid_y + output_offset[1]
+                    if 0 <= out_gx < grid_width and 0 <= out_gy < grid_height:
+                        rect = pygame.Rect(
+                            round((out_gx * GRID_SIZE - camera_x) * zoom),
+                            round((out_gy * GRID_SIZE - camera_y) * zoom),
+                            round(GRID_SIZE * zoom),
+                            round(GRID_SIZE * zoom)
+                        )
+                        pygame.draw.rect(screen, (255, 200, 0), rect, 3)  # Orange for output
+
 
     # --- POPUP MENU FOR LASSO SELECTION ---
     popup_button_defs = []
@@ -1222,6 +1274,8 @@ while running:
                 lasso_start = lasso_end = None
             elif event.button == 3:
                 panning = False
+
+    
 
     pygame.display.flip()
     clock.tick(60)
