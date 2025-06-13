@@ -64,7 +64,8 @@ last_mouse_x, last_mouse_y = 0, 0
 # Grid system (big space)
 grid_width = 100  
 grid_height = 100
-grid = [[{"type": "empty", "powered": False,} for _ in range(grid_width)] for _ in range(grid_height)]
+# Add this to the grid initialization
+grid = [[{"type": "empty", "powered": False, "frequency": None, "timer": 0} for _ in range(grid_width)] for _ in range(grid_height)]
 placement_mode = "redstone"  # or "power"
 lasso_start = None
 lasso_end = None
@@ -88,6 +89,7 @@ nor_button_rect = pygame.Rect(WIDTH - 110, 300, 90, 30)
 nand_button_rect = pygame.Rect(WIDTH - 110, 340, 90, 30)
 lasso_button_rect = pygame.Rect(WIDTH - 110, 380, 90, 30)
 save_component_button_rect = pygame.Rect(20, 110, 160, 40)
+clock_button_rect = pygame.Rect(WIDTH - 110, 420, 90, 30)
 
 
 
@@ -112,6 +114,7 @@ button_scales = {mode: 1.0 for mode, _, _ in [
     ("nand", nand_button_rect, "NAND"),
     ("select", lasso_button_rect, "Lasso"),
     ("delete", delete_button_rect, "Delete"),
+    ("clock", clock_button_rect, "Clock"),
 ]}
 
 # Add these at the top with other initializations
@@ -429,12 +432,22 @@ def propagate_power():
     # Step 1: Reset
     for row in grid:
         for cell in row:
-            cell["powered"] = False
+            if cell["type"] != "clock":  # Clock retains its state
+                cell["powered"] = False
 
     # Step 2: Power propagation from power sources
     for y in range(grid_height):
         for x in range(grid_width):
-            if grid[y][x]["type"] == "power":
+            cell = grid[y][x]
+            if cell["type"] == "clock":
+                # Toggle clock state based on its frequency
+                cell["timer"] += 1
+                if cell["timer"] >= cell["frequency"]:
+                    cell["powered"] = not cell["powered"]
+                    cell["timer"] = 0
+                if cell["powered"]:
+                    propagate_from(x, y)
+            elif cell["type"] == "power":
                 propagate_from(x, y)
 
     # Step 3: Evaluate gates
@@ -496,8 +509,8 @@ def propagate_from(x, y):
 
         if 0 <= cx < grid_width and 0 <= cy < grid_height:
             cell = grid[cy][cx]
-            if cell["type"] in ["redstone", "power", "or"]:
-                if not cell["powered"]:
+            if cell["type"] in ["redstone", "power", "or", "clock"]:
+                if not cell["powered"] or cell["type"] == "clock":
                     cell["powered"] = True
                     neighbors = [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]
                     stack.extend(neighbors)
@@ -548,6 +561,9 @@ def draw_grid():
                     pygame.draw.rect(screen, color[:3], rect)
                 elif cell["type"] == "power":
                     pygame.draw.rect(screen, (255, 255, 0), rect)
+                elif cell["type"] == "clock":
+                    color = (0, 200, 200) if cell["powered"] else (0, 100, 100)
+                    pygame.draw.rect(screen, color, rect)
                 if cell["type"] == "gate":
                     gate_def = GATE_DEFINITIONS.get(cell["gate_type"], {})
                     local_pos = cell.get("local_pos", (0, 0))
@@ -805,6 +821,7 @@ def draw_grid():
         "nand": (200, 0, 255),
         "delete": (255, 80, 80),
         "select": (100, 200, 255),
+        "clock": (0, 200, 200),
     }
 
     button_defs = [
@@ -818,6 +835,8 @@ def draw_grid():
         ("nand", nand_button_rect, "NAND"),
         ("select", lasso_button_rect, "Lasso"),
         ("delete", delete_button_rect, "Delete"),
+        ("clock", clock_button_rect, "Clock"),
+        
     ]
 
     mouse_pos = pygame.mouse.get_pos()
@@ -836,7 +855,8 @@ def draw_grid():
             (mode == "nor" and placement_mode == "nor") or
             (mode == "nand" and placement_mode == "nand") or
             (mode == "delete" and placement_mode == "delete") or
-            (mode == "select" and placement_mode == "select")
+            (mode == "select" and placement_mode == "select") or
+            (mode == "clock" and placement_mode == "clock")
         )
 
         # Smoothly animate scale
@@ -1064,6 +1084,12 @@ while running:
                 else:
                     if len(component_name_input) < 20 and event.unicode.isprintable():
                         component_name_input += event.unicode
+            elif event.type == pygame.KEYDOWN:
+                if placement_mode == "clock":
+                    if event.key == pygame.K_UP:
+                        grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1)  # Increase speed
+                    elif event.key == pygame.K_DOWN:
+                        grid[y][x]["frequency"] += 1  # Decrease speed
             else:
                 if event.key == pygame.K_r:
                     rotation = rotation + 1 if rotation < 3 else 0
@@ -1164,6 +1190,10 @@ while running:
                     placement_mode = "delete"
                     clear_lasso_selection()
                     continue
+                elif clock_button_rect.collidepoint(mx, my):
+                    placement_mode = "clock"
+                    clear_lasso_selection()
+                    continue 
 
                 elif menu_open and exit_button_rect.collidepoint(mx, my):
                     state = MENU
@@ -1200,6 +1230,9 @@ while running:
                             place_gate(x, y, "nor", rotation)
                         elif placement_mode == "nand":
                             place_gate(x, y, "nand", rotation)
+                        elif placement_mode == "clock":
+                            frequency = 30
+                            grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
                         elif placement_mode == "delete":
                             cell = grid[y][x]
                             if cell["type"] == "gate":
@@ -1274,6 +1307,7 @@ while running:
                 lasso_start = lasso_end = None
             elif event.button == 3:
                 panning = False
+                
 
     
 
