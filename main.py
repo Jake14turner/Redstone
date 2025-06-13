@@ -1084,15 +1084,15 @@ while running:
                 else:
                     if len(component_name_input) < 20 and event.unicode.isprintable():
                         component_name_input += event.unicode
-            elif event.type == pygame.KEYDOWN:
-                if placement_mode == "clock":
-                    if event.key == pygame.K_UP:
-                        grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1)  # Increase speed
-                    elif event.key == pygame.K_DOWN:
-                        grid[y][x]["frequency"] += 1  # Decrease speed
-            else:
-                if event.key == pygame.K_r:
-                    rotation = rotation + 1 if rotation < 3 else 0
+            elif placement_mode == "clock":
+                if event.key == pygame.K_UP:
+                    grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1)  # Increase speed
+                elif event.key == pygame.K_DOWN:
+                    grid[y][x]["frequency"] += 1  # Decrease speed
+
+            # Handle rotation globally
+            if event.key == pygame.K_r:
+                rotation = rotation + 1 if rotation < 3 else 0
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mx, my = event.pos
