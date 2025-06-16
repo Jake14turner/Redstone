@@ -94,6 +94,8 @@ save_component_button_rect = pygame.Rect(20, 110, 160, 40)  # (Assuming this is 
 
 
 
+
+
 clipboard = []
 
 # Hamburger icon animation variables
@@ -525,10 +527,14 @@ def propagate_no_power(x, y):
                     for nx, ny, ndir in [(cx+1, cy, "horizontal"), (cx-1, cy, "horizontal"),
                                             (cx, cy+1, "vertical"), (cx, cy-1, "vertical")]:
                         stack.append((nx, ny, ndir))
-            elif cell["type"] == "gate" and cell["gate_type"] is not "not":
+            elif cell["type"] == "gate":
                 gate_type = cell.get("gate_type")
+                if gate_type is None:
+                    continue
+                gate_def = GATE_DEFINITIONS.get(gate_type)
+                if not gate_def:
+                    continue
                 local_pos = cell.get("local_pos")
-                gate_def = GATE_DEFINITIONS.get(gate_type, {})
                 # Only unpower input/output cells
                 if local_pos in gate_def.get("inputs", []) or local_pos == gate_def.get("output"):
                     for nx, ny in [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]:
@@ -557,13 +563,13 @@ def propagate_power():
                 propagate_from(x, y)
 
     # Step 2.5: Clear all gate outputs before evaluating
-    for y in range(grid_height):
-        for x in range(grid_width):
-            cell = grid[y][x]
-            if cell["type"] == "gate" and cell.get("local_pos") is not None:
-                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
-                if gate_def and cell["local_pos"] == gate_def["output"]:
-                    cell["powered"] = False
+    #for y in range(grid_height):
+    #    for x in range(grid_width):
+    #        cell = grid[y][x]
+    #        if cell["type"] == "gate" and cell.get("local_pos") is not None:
+    #            gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+    #            if gate_def and cell["local_pos"] == gate_def["output"]:
+    #                cell["powered"] = False
 
     # Step 3: Iterate until stable
     max_iterations = 10
@@ -594,6 +600,19 @@ def propagate_power():
         iteration += 1
     if iteration == max_iterations:
         print("Warning: propagate_power reached max iterations (possible loop)")
+    
+    #loop through all of the gates and make sure the output logic is being followed
+    for y in range(grid_height):
+        for x in range(grid_width):
+            cell = grid[y][x]
+            if cell["type"] == "gate":
+                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+                if gate_def:
+                    out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
+                    out_cell = grid[out_y][out_x]
+                    if out_cell["powered"] != output_logic:
+                        out_cell["powered"] = output_logic
+                        propagate_from(out_x, out_y)
 
 
 def evaluate_gate_output(x, y, definition):
@@ -609,7 +628,7 @@ def evaluate_gate_output(x, y, definition):
     elif definition["logic"] == "and":
         output_logic = all(inputs_powered) and len(inputs_powered) == len(definition["inputs"])
     elif definition["logic"] == "not":
-        output_logic = (len(inputs_powered) == 1) and (not inputs_powered[0])
+        output_logic = not inputs_powered[0] if inputs_powered else True
     elif definition["logic"] == "xor":
         output_logic = sum(inputs_powered) == 1
     elif definition["logic"] == "nor":
@@ -635,7 +654,7 @@ def evaluate_gate(x, y, definition):
     elif definition["logic"] == "and":
         output_logic = all(inputs_powered) and len(inputs_powered) == len(definition["inputs"])
     elif definition["logic"] == "not":
-        output_logic = (len(inputs_powered) == 1) and (not inputs_powered[0])
+        output_logic = not inputs_powered[0] if inputs_powered else True
     elif definition["logic"] == "xor":
         output_logic = sum(inputs_powered) == 1
     elif definition["logic"] == "nor":
