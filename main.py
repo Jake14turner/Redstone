@@ -1,5 +1,5 @@
 import pygame
-import math  # Needed for the X animation
+import math  
 import json
 import os
 
@@ -34,7 +34,7 @@ def load_components():
     with open(COMPONENTS_FILE, "r") as f:
         return json.load(f)
 
-# Setup Pygame
+
 pygame.init()
 WIDTH, HEIGHT = 800, 600
 GRID_SIZE = 20
@@ -43,14 +43,14 @@ REDSTONE_BASE = (255, 50, 50)
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
-font = pygame.font.Font(None, 36)  # Font for text rendering
+font = pygame.font.Font(None, 36) 
 
-# Menu state
+
 MENU, BUILD_MODE = "menu", "build"
-state = MENU  # Start in the main menu
-menu_open = False  # Tracks whether the side menu is visible
+state = MENU  
+menu_open = False
 
-# Camera controls
+
 camera_x, camera_y = 0, 0
 target_camera_x, target_camera_y = camera_x, camera_y
 move_speed = 0.15  
@@ -61,23 +61,23 @@ zoom_speed = 0.1
 panning = False
 last_mouse_x, last_mouse_y = 0, 0
 
-# Grid system (big space)
+
 grid_width = 100  
 grid_height = 100
-# Add this to the grid initialization
+
 grid = [[{"type": "empty", "powered": False, "frequency": None, "timer": 0} for _ in range(grid_width)] for _ in range(grid_height)]
-placement_mode = "redstone"  # or "power"
+placement_mode = "redstone" 
 lasso_start = None
 lasso_end = None
 selected_cells = set()
-item_menu_anim = 0.0  # 0.0 = hidden, 1.0 = fully visible
+item_menu_anim = 0.0  
 
 
-# Button positions
-menu_button_rect = pygame.Rect(10, 10, 40, 40)  # Three-line menu button
-side_menu_rect = pygame.Rect(0, 0, 200, HEIGHT)  # Side menu (hidden until clicked)
-exit_button_rect = pygame.Rect(20, 60, 160, 40)  # Exit button inside side menu
-item_menu_rect = pygame.Rect(WIDTH - 120, 0, 120, HEIGHT)  # Updated item menu position
+
+menu_button_rect = pygame.Rect(10, 10, 40, 40) 
+side_menu_rect = pygame.Rect(0, 0, 200, HEIGHT)  
+exit_button_rect = pygame.Rect(20, 60, 160, 40) 
+item_menu_rect = pygame.Rect(WIDTH - 120, 0, 120, HEIGHT) 
 redstone_button_rect = pygame.Rect(WIDTH - 110, 20, 90, 30)
 power_button_rect = pygame.Rect(WIDTH - 110, 60, 90, 30)
 or_button_rect = pygame.Rect(WIDTH - 110, 100, 90, 30)
@@ -90,19 +90,19 @@ nand_button_rect = pygame.Rect(WIDTH - 110, 340, 90, 30)
 lasso_button_rect = pygame.Rect(WIDTH - 110, 380, 90, 30)
 save_component_button_rect = pygame.Rect(20, 110, 160, 40)
 clock_button_rect = pygame.Rect(WIDTH - 110, 420, 90, 30)
-bridge_button_rect = pygame.Rect(WIDTH - 110, 460, 90, 30)  # Moved below redstone
+bridge_button_rect = pygame.Rect(WIDTH - 110, 460, 90, 30) 
 
 
 
 clipboard = []
 
-# Hamburger icon animation variables
+
 menu_icon_hover = False
-menu_icon_animation = 0.0  # For smooth transitions
+menu_icon_animation = 0.0  
 
 def lerp(a, b, t):
-    return a + (b - a) * t  # Linear interpolation
-item_menu_anim = 0.0  # 0.0 = hidden, 1.0 = fully visible
+    return a + (b - a) * t 
+item_menu_anim = 0.0  
 
 button_scales = {mode: 1.0 for mode, _, _ in [
     ("redstone", redstone_button_rect, "Redstone"),
@@ -119,12 +119,12 @@ button_scales = {mode: 1.0 for mode, _, _ in [
     ("clock", clock_button_rect, "Clock"),
 ]}
 
-# Add these at the top with other initializations
+
 rotation = 0
 hover_states = {0: False, 1: False, 2: False}
 text_scales = [1.0, 1.0, 1.0]
-TARGET_SCALE = 1.15  # Slightly more subtle
-SCALE_SPEED = 0.2    # Faster but still smooth
+TARGET_SCALE = 1.15 
+SCALE_SPEED = 0.2  
 GATE_DEFINITIONS = {
     "0-or": {
         "size": (3, 2),
@@ -272,25 +272,24 @@ GATE_DEFINITIONS = {
     },
 }
 
-# Pre-render font surfaces at different sizes to avoid creating new ones each frame
+
 font_cache = {}
 def get_font(size):
     if size not in font_cache:
         font_cache[size] = pygame.font.Font(None, size)
     return font_cache[size]
 
-# Pre-calculate glow colors
+
 gold_base = (253, 255, 150)
 gold_light = (253, 255, 117)
 glow_colors = [(*gold_light, alpha) for alpha in range(50, 0, -10)]
 
-# Global counter for unique gate IDs
+
 gate_counter = 0
 
 def assign_gate_id_to_group(x, y, w, h):
     global gate_counter
     gate_id = gate_counter
-    # Assign the gate ID to all tiles that belong to this gate
     for dy in range(h):
         for dx in range(w):
             gx = x + dx
@@ -303,17 +302,17 @@ def place_gate(x, y, gate_type, rotation):
     definition = GATE_DEFINITIONS[typeOfGate]
     w, h = definition["size"]
 
-    # Check if space is available
+
     for dy in range(h):
         for dx in range(w):
             gx = x + dx
             gy = y + dy
             if not (0 <= gx < grid_width and 0 <= gy < grid_height):
-                return  # Out of bounds
+                return
             if grid[gy][gx]["type"] != "empty":
-                return  # Already occupied
+                return  
 
-    # Place the gate and assign the same unique gate ID to all tiles of the gate
+
     for dy in range(h):
         for dx in range(w):
             gx = x + dx
@@ -325,7 +324,7 @@ def place_gate(x, y, gate_type, rotation):
                 "powered": False
             }
 
-    # Assign the unique gate ID to all tiles of the gate
+
     assign_gate_id_to_group(x, y, w, h)
 
 
@@ -341,39 +340,38 @@ def draw_menu():
         ("Exit", 390)
     ]
     
-    # Pre-calculate time-based factor for consistent animation speed
-    dt = clock.get_time() / 16.67  # Normalized to 60 FPS
+
+    dt = clock.get_time() / 16.67 
     
     for i, (text, y) in enumerate(menu_items):
-        # Update hover state
+
         btn_rect = pygame.Rect(250, y - 10, 300, 60)
         hover_states[i] = btn_rect.collidepoint(mouse_pos)
         
-        # Animate scale with time-adjusted speed
+
         target_scale = TARGET_SCALE if hover_states[i] else 1.0
         text_scales[i] += (target_scale - text_scales[i]) * SCALE_SPEED * dt
         
-        # Calculate current font size (rounded to nearest even number)
+
         current_size = max(24, min(48, int(36 * text_scales[i])))
-        current_size = current_size + (current_size % 2)  # Keep sizes even for cleaner rendering
+        current_size = current_size + (current_size % 2) 
         
-        # Get cached font
+
         current_font = get_font(current_size)
         
-        # Main text surface (cached if possible)
+
         text_surf = current_font.render(text, True, gold_base)
         text_rect = text_surf.get_rect(center=(400, y + 25))
         
-        # Optimized glow effect - only 3 layers instead of 5
+
         for alpha_color in glow_colors[:3]:
-            # Create once and reuse
             glow_surf = current_font.render(text, True, alpha_color)
             screen.blit(glow_surf, glow_surf.get_rect(center=(400, y + 25)))
         
-        # Draw main text
+
         screen.blit(text_surf, text_rect)
         
-        # Dynamic underline (only when nearly hovered)
+
         if text_scales[i] > 1.05:
             underline_length = int(text_rect.width * min(1.0, (text_scales[i] - 1.0) / (TARGET_SCALE - 1.0)))
             pygame.draw.line(
@@ -382,13 +380,13 @@ def draw_menu():
                 (400 + underline_length//2, text_rect.bottom + 2),
                 2
             )
-# Define colors using RGB values
-GREEN = (0, 255, 0)   # RGB for green
-GRAY = (169, 169, 169)  # RGB for gray
-BLUE = (0, 0, 255)    # RGB for blue
-# Define colors using RGB values
-YELLOW = (255, 255, 0)  # RGB for yellow
-WHITE = (255, 255, 255)  # RGB for white
+
+GREEN = (0, 255, 0)  
+GRAY = (169, 169, 169) 
+BLUE = (0, 0, 255)  
+
+YELLOW = (255, 255, 0)  
+WHITE = (255, 255, 255)  
 
 def draw_cell_inspector():
     mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -404,16 +402,16 @@ def draw_cell_inspector():
         if cell["type"] == "gate":
             gate_type = cell.get("gate_type", "?")
             local_pos = cell.get("local_pos", "?")
-            gate_id = cell.get("gate_id", "N/A")  # <-- Add this line
-            lines.append(f"Gate ID: {gate_id}")    # <-- Add this line
+            gate_id = cell.get("gate_id", "N/A")  
+            lines.append(f"Gate ID: {gate_id}") 
             lines.append(f"Gate type: {gate_type}")
             lines.append(f"Local pos: {local_pos}")
             gate_def = GATE_DEFINITIONS.get(gate_type)
             if gate_def:
-                # Show inputs and output positions
+
                 lines.append(f"Inputs: {gate_def['inputs']}")
                 lines.append(f"Output: {gate_def['output']}")
-                # Show current input values
+
                 input_vals = []
                 for dx, dy in gate_def["inputs"]:
                     gx, gy = grid_x - local_pos[0] + dx, grid_y - local_pos[1] + dy
@@ -423,7 +421,7 @@ def draw_cell_inspector():
                     else:
                         input_vals.append(None)
                 lines.append(f"Input values: {input_vals}")
-                # Show output logic
+  
                 out_x = grid_x - local_pos[0] + gate_def["output"][0]
                 out_y = grid_y - local_pos[1] + gate_def["output"][1]
                 output_logic = None
@@ -433,9 +431,9 @@ def draw_cell_inspector():
         elif cell["type"] == "clock":
             lines.append(f"Frequency: {cell.get('frequency', '?')}")
             lines.append(f"Timer: {cell.get('timer', '?')}")
-        # Add any other cell-specific info here
 
-        # Draw background box
+
+
         font = pygame.font.Font(None, 24)
         box_w = 0
         box_h = 0
@@ -457,21 +455,21 @@ def draw_hamburger_icon():
     """Draws animated hamburger menu icon that transforms to X when open"""
     global menu_icon_hover, menu_icon_animation
     
-    # Update animation state
+
     mouse_pos = pygame.mouse.get_pos()
     menu_icon_hover = menu_button_rect.collidepoint(mouse_pos)
     
-    # Animate the transition
+
     target_animation = 1.0 if menu_icon_hover or menu_open else 0.0
     menu_icon_animation = lerp(menu_icon_animation, target_animation, 0.2)
     
-    # Position and size parameters
+
     x, y = 20, 15
     width = 24
     thickness = 3
     spacing = 5
     
-    # Color animation
+
     base_color = (200, 200, 200)
     hover_color = (240, 240, 240)
     current_color = (
@@ -480,20 +478,20 @@ def draw_hamburger_icon():
         int(lerp(base_color[2], hover_color[2], menu_icon_animation))
     )
     
-    # Draw either hamburger or X based on menu state
+
     if not menu_open:
-        # Animated hamburger icon
-        current_spacing = spacing + (3 * menu_icon_animation)  # Lines spread on hover
+
+        current_spacing = spacing + (3 * menu_icon_animation) 
         for i in range(3):
             line_y = y + i * (thickness + current_spacing)
             pygame.draw.rect(screen, current_color, (x, line_y, width, thickness))
     else:
-        # Animated X icon
+
         center_x = x + width // 2
         center_y = y + (thickness * 2 + spacing * 2) // 2
         line_length = width * min(1.0, menu_icon_animation * 1.5)
         
-        # Draw two rotating lines
+
         for angle in [45, -45]:
             end_x = center_x + line_length * math.cos(math.radians(angle))
             end_y = center_y + line_length * math.sin(math.radians(angle))
@@ -512,13 +510,12 @@ def clear_lasso_selection():
     lasso_end = None
 
 def propagate_power():
-    # Step 1: Reset all non-clock powered cells
     for row in grid:
         for cell in row:
             if cell["type"] != "clock":
                 cell["powered"] = False
 
-    # Step 2: Organize gate parts by ID
+
     gates_by_id = {}
     for y in range(grid_height):
         for x in range(grid_width):
@@ -526,7 +523,7 @@ def propagate_power():
             if cell["type"] == "gate" and "gate_id" in cell:
                 gates_by_id.setdefault(cell["gate_id"], []).append((x, y, cell))
 
-    # Step 3: Trigger static sources
+
     for y in range(grid_height):
         for x in range(grid_width):
             cell = grid[y][x]
@@ -540,7 +537,7 @@ def propagate_power():
                 if cell["powered"]:
                     propagate_from(x, y)
 
-    # Step 4: Loop until stable (max 20 iterations)
+
     changed = True
     iterations = 0
     max_iterations = 20
@@ -711,7 +708,7 @@ def propagate_from(x, y, direction=None):
                     
 def draw_grid():
     global copy_button_rect, delete_button_rect_popup, paste_button_rect
-    propagate_power()  # Recalculate power state
+    propagate_power() 
 
     screen.fill((30, 30, 30))
     global zoom, camera_x, camera_y
@@ -739,9 +736,9 @@ def draw_grid():
                     color = (255, 0, 0, alpha) if cell["powered"] else (100, 0, 0, alpha)
                     pygame.draw.rect(screen, color[:3], rect)
                 if cell["type"] == "bridge":
-                    # Draw a cross or a special color
+
                     pygame.draw.rect(screen, (120, 120, 255), rect)
-                    # Optionally, draw a cross to indicate both directions
+      
                     pygame.draw.line(screen, (200, 200, 255), rect.midleft, rect.midright, 3)
                     pygame.draw.line(screen, (200, 200, 255), rect.midtop, rect.midbottom, 3)
                 elif cell["type"] == "power":
@@ -755,21 +752,20 @@ def draw_grid():
                     input_offsets = gate_def.get("inputs", [])
                     output_offset = gate_def.get("output", (-1, -1))
 
-                    # Only draw the "U" shape: inputs, output, and vertical sides
+
                     u_shape = input_offsets + [output_offset]
                     if cell["gate_type"] in ["0-not", "1-not", "2-not", "3-not"]:
                         not_shape = input_offsets + [output_offset]
                         if local_pos in not_shape:
                             color = (30, 30, 180) if not cell["powered"] else (90, 140, 255)
                             pygame.draw.rect(screen, color, rect)
-                            # Both arrows point in the output direction
                             arrow_color_in = (80, 180, 255)
                             arrow_color_out = (255, 220, 80)
                             arrow_w = max(4, rect.width // 3)
                             arrow_h = max(6, rect.height // 2)
                             cx, cy = rect.center
                             rot = int(cell["gate_type"].split('-')[0])
-                            # Arrow points for the output direction
+
                             if rot == 0:  # Down
                                 points = [(cx, rect.bottom - 3), (cx - arrow_w, rect.bottom - arrow_h), (cx + arrow_w, rect.bottom - arrow_h)]
                             elif rot == 1:  # Right
@@ -778,10 +774,8 @@ def draw_grid():
                                 points = [(cx, rect.top + 3), (cx - arrow_w, rect.top + arrow_h), (cx + arrow_w, rect.top + arrow_h)]
                             elif rot == 3:  # Left
                                 points = [(rect.left + 3, cy), (rect.left + arrow_h, cy - arrow_w), (rect.left + arrow_h, cy + arrow_w)]
-                            # Draw arrow for input cell(s)
                             if local_pos in input_offsets:
                                 pygame.draw.polygon(screen, arrow_color_in, points)
-                            # Draw arrow for output cell
                             if local_pos == output_offset:
                                 pygame.draw.polygon(screen, arrow_color_out, points)
 
@@ -840,7 +834,7 @@ def draw_grid():
                                 label_text = "OUT"
                         
 
-    # --- SELECT RECTANGLE ---
+
     if placement_mode == "select" and lasso_start and lasso_end:
         x1, y1 = lasso_start
         x2, y2 = lasso_end
@@ -853,7 +847,7 @@ def draw_grid():
         pygame.draw.rect(screen, (100, 200, 255), rect, 2)
     
 
-       # --- PLACEMENT OUTLINE PREVIEW ---
+
     if placement_mode in ["redstone", "power", "or", "and", "not", "xor", "nor", "nand"]:
         mouse_x, mouse_y = pygame.mouse.get_pos()
         grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
@@ -866,16 +860,16 @@ def draw_grid():
                     round(GRID_SIZE * zoom),
                     round(GRID_SIZE * zoom)
                 )
-                pygame.draw.rect(screen, (255, 248, 189), rect, 3)  # Yellow outline
+                pygame.draw.rect(screen, (255, 248, 189), rect, 3) 
             else:
-                # For gates, show the actual U-shape (inputs and output)
+
                 typeOfGate = f"{rotation}-{placement_mode}"
                 gate_def = GATE_DEFINITIONS.get(typeOfGate)
                 if gate_def:
                     w, h = gate_def["size"]
                     input_offsets = gate_def["inputs"]
                     output_offset = gate_def["output"]
-                    # Draw input cells
+
                     for dx, dy in input_offsets:
                         gx = grid_x + dx
                         gy = grid_y + dy
@@ -886,8 +880,8 @@ def draw_grid():
                                 round(GRID_SIZE * zoom),
                                 round(GRID_SIZE * zoom)
                             )
-                            pygame.draw.rect(screen, (0, 255, 0), rect, 3)  # Green for inputs
-                    # Draw output cell
+                            pygame.draw.rect(screen, (0, 255, 0), rect, 3) 
+
                     out_gx = grid_x + output_offset[0]
                     out_gy = grid_y + output_offset[1]
                     if 0 <= out_gx < grid_width and 0 <= out_gy < grid_height:
@@ -897,10 +891,9 @@ def draw_grid():
                             round(GRID_SIZE * zoom),
                             round(GRID_SIZE * zoom)
                         )
-                        pygame.draw.rect(screen, (255, 200, 0), rect, 3)  # Orange for output
+                        pygame.draw.rect(screen, (255, 200, 0), rect, 3)  
 
 
-    # --- POPUP MENU FOR LASSO SELECTION ---
     popup_button_defs = []
     if selected_cells:
         xs = [x for x, y in selected_cells]
@@ -928,11 +921,8 @@ def draw_grid():
 
         for name, rect, label, base_color in popup_button_defs:
             is_hover = rect.collidepoint(mouse_pos)
-            # Animate scale
             target = popup_target_scale if is_hover else 1.0
             popup_scales[name] += (target - popup_scales[name]) * popup_scale_speed
-
-            # Calculate scaled rect
             scale = popup_scales[name]
             center = rect.center
             scaled_w = int(rect.width * scale)
@@ -940,11 +930,9 @@ def draw_grid():
             draw_rect = pygame.Rect(0, 0, scaled_w, scaled_h)
             draw_rect.center = center
 
-            # Pastel/glow color
             pastel = tuple(min(255, int(c * 0.6 + 255 * 0.4)) for c in base_color)
             draw_color = pastel if is_hover else (0, 0, 0)
 
-            # Glow effect
             if is_hover:
                 glow_surface = pygame.Surface((draw_rect.width, draw_rect.height), pygame.SRCALPHA)
                 glow_center = (draw_rect.width // 2, draw_rect.height // 2)
@@ -967,12 +955,10 @@ def draw_grid():
             text_rect = text_surf.get_rect(center=draw_rect.center)
             screen.blit(text_surf, text_rect)
 
-        # Assign rects for event handling
         copy_button_rect = popup_button_defs[0][1]
         delete_button_rect_popup = popup_button_defs[1][1]
         paste_button_rect = popup_button_defs[2][1]
     else:
-        # Reset popup button scales if nothing is selected
         if hasattr(draw_grid, "popup_button_scales"):
             draw_grid.popup_button_scales = {name: 1.0 for name, *_ in [
                 ("copy", None, None, None),
@@ -980,7 +966,6 @@ def draw_grid():
                 ("paste", None, None, None),
             ]}
 
-    # --- HIGHLIGHT SELECTED CELLS ---
     for (x, y) in selected_cells:
         grid_x = round((x * GRID_SIZE - camera_x) * zoom)
         grid_y = round((y * GRID_SIZE - camera_y) * zoom)
@@ -990,7 +975,6 @@ def draw_grid():
     draw_hamburger_icon()
     draw_cell_inspector()
 
-    # --- ITEM MENU SLIDE-IN ---
     menu_width = 120
     slide_offset = int(menu_width * (1 - item_menu_anim))
     item_menu_rect_slid = item_menu_rect.move(slide_offset, 0)
@@ -1028,7 +1012,7 @@ def draw_grid():
     ]
 
     mouse_pos = pygame.mouse.get_pos()
-    scale_speed = 0.18  # Smoother animation
+    scale_speed = 0.18 
     target_scale = 1.15
 
     for mode, rect, label in button_defs:
@@ -1048,11 +1032,9 @@ def draw_grid():
             (mode == "clock" and placement_mode == "clock")
         )
 
-        # Smoothly animate scale
         target = target_scale if (is_hover or is_active) else 1.0
         button_scales[mode] += (target - button_scales[mode]) * scale_speed
 
-        # Calculate scaled rect
         scale = button_scales[mode]
         center = rect.move(slide_offset, 0).center
         scaled_w = int(rect.width * scale)
@@ -1064,14 +1046,12 @@ def draw_grid():
         pastel = tuple(min(255, int(c * 0.6 + 255 * 0.4)) for c in base_color)
         draw_color = pastel if (is_hover or is_active) else (0, 0, 0)
 
-        # --- Radial glow effect ---
-# --- Radial glow effect ---
         if is_hover or is_active:
             glow_surface = pygame.Surface((draw_rect.width, draw_rect.height), pygame.SRCALPHA)
             glow_center = (draw_rect.width // 2, draw_rect.height // 2)
             max_radius = int(min(draw_rect.width, draw_rect.height) * 0.95)  # Make glow larger
             for i in range(10, 0, -1):
-                alpha = int(80 * (i / 10))  # Stronger alpha
+                alpha = int(80 * (i / 10)) 
                 radius = int(max_radius * (i / 10))
                 pygame.draw.circle(
                     glow_surface,
@@ -1088,13 +1068,11 @@ def draw_grid():
         text_rect = text_surf.get_rect(center=draw_rect.center)
         screen.blit(text_surf, text_rect)
 
-    # Side menu
+
     if menu_open:
         pygame.draw.rect(screen, (50, 50, 50), side_menu_rect)
 
-        # --- Animated Exit Button ---
         mouse_pos = pygame.mouse.get_pos()
-        # Track scale for exit button
         if not hasattr(draw_grid, "exit_button_scale"):
             draw_grid.exit_button_scale = 1.0
         scale_speed = 0.18
@@ -1103,7 +1081,7 @@ def draw_grid():
         target = target_scale if is_hover else 1.0
         draw_grid.exit_button_scale += (target - draw_grid.exit_button_scale) * scale_speed
 
-        # Calculate scaled rect
+
         scale = draw_grid.exit_button_scale
         center = exit_button_rect.center
         scaled_w = int(exit_button_rect.width * scale)
@@ -1111,12 +1089,12 @@ def draw_grid():
         draw_rect = pygame.Rect(0, 0, scaled_w, scaled_h)
         draw_rect.center = center
 
-        # Pastel/glow color
+
         base_color = (200, 80, 80)
         pastel = tuple(min(255, int(c * 0.6 + 255 * 0.4)) for c in base_color)
         draw_color = pastel if is_hover else (50, 50, 50)
 
-        # Glow effect
+
         if is_hover:
             glow_surface = pygame.Surface((draw_rect.width, draw_rect.height), pygame.SRCALPHA)
             glow_center = (draw_rect.width // 2, draw_rect.height // 2)
@@ -1146,7 +1124,6 @@ def draw_grid():
         text_rect = text_surf.get_rect(center=draw_rect.center)
         screen.blit(text_surf, text_rect)
 
-        # --- Animated Save Component Button ---
         if not hasattr(draw_grid, "save_button_scale"):
             draw_grid.save_button_scale = 1.0
         save_is_hover = save_component_button_rect.collidepoint(mouse_pos)
@@ -1199,7 +1176,6 @@ def draw_components_list(components, selected_index):
         color = (255, 255, 0) if i == selected_index else (200, 200, 200)
         surf = font.render(comp["name"], True, color)
         screen.blit(surf, (100, y))
-        # Draw delete button
         del_rect = pygame.Rect(350, y, 80, 32)
         pygame.draw.rect(screen, (200, 80, 80), del_rect, border_radius=8)
         del_font = pygame.font.Font(None, 28)
@@ -1217,7 +1193,6 @@ def load_component_to_grid(component, index=None):
     comp_w, comp_h = component["width"], component["height"]
     comp_grid = component["grid"]
     grid_width, grid_height = comp_w, comp_h
-    # Deep copy the component grid
     grid = [[cell.copy() for cell in row] for row in comp_grid]
     editing_component_index = index
 
@@ -1233,7 +1208,6 @@ def draw_naming_prompt(input_text):
     input_font = pygame.font.Font(None, 36)
     input_surf = input_font.render(input_text, True, (0, 255, 0))
     screen.blit(input_surf, (box.x + 10, box.y + 10))
-    # Draw a green "Save" button
     save_rect = pygame.Rect(WIDTH//2 - 60, HEIGHT//2 + 50, 120, 40)
     pygame.draw.rect(screen, (0, 200, 0), save_rect, border_radius=8)
     save_text = input_font.render("Save", True, (255, 255, 255))
@@ -1251,8 +1225,6 @@ while running:
         save_rect = draw_naming_prompt(component_name_input)
     else:
         draw_grid()
-
-    # Animate item menu slide-in
     mouse_x, _ = pygame.mouse.get_pos()
     show_menu = mouse_x > WIDTH - 180
     target_anim = 1.0 if show_menu else 0.0
@@ -1275,11 +1247,10 @@ while running:
                         component_name_input += event.unicode
             elif placement_mode == "clock":
                 if event.key == pygame.K_UP:
-                    grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1)  # Increase speed
+                    grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1) 
                 elif event.key == pygame.K_DOWN:
-                    grid[y][x]["frequency"] += 1  # Decrease speed
+                    grid[y][x]["frequency"] += 1
 
-            # Handle rotation globally
             if event.key == pygame.K_r:
                 rotation = rotation + 1 if rotation < 3 else 0
 
@@ -1293,7 +1264,6 @@ while running:
                         save_component(selected_cells, grid, component_name_input.strip())
                         state = BUILD_MODE
 
-            # --- POPUP MENU BUTTON HANDLING ---
             elif selected_cells:
                 if copy_button_rect and copy_button_rect.collidepoint(mx, my):
                     clipboard.clear()
@@ -1324,7 +1294,6 @@ while running:
 
             if state == MENU:
                 if 250 <= my <= 300:
-                    # Reset to a fresh grid when making a new component
                     grid_width = 100
                     grid_height = 100
                     grid = [[{"type": "empty", "powered": False} for _ in range(grid_width)] for _ in range(grid_height)]
@@ -1396,13 +1365,13 @@ while running:
                     state = NAMING_COMPONENT
                     component_name_input = ""
 
-                # --- LASSO TOOL START ---
+
                 if placement_mode == "select" and event.button == 1:
                     lasso_start = (int((mx / zoom + camera_x) // GRID_SIZE),
                                    int((my / zoom + camera_y) // GRID_SIZE))
                     lasso_end = lasso_start
 
-                # --- NORMAL PLACEMENT/DELETE ---
+
                 elif event.button == 1:
                     x = int((mx / zoom + camera_x) // GRID_SIZE)
                     y = int((my / zoom + camera_y) // GRID_SIZE)
@@ -1459,10 +1428,10 @@ while running:
                 if 20 <= mx <= 100 and 20 <= my <= 60:
                     state = MENU
                 else:
-                    # Check if a delete button was clicked
+
                     for idx, del_rect in enumerate(component_delete_rects):
                         if del_rect.collidepoint(mx, my):
-                            # Delete the component
+
                             components = load_components()
                             if 0 <= idx < len(components):
                                 del components[idx]
