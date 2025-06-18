@@ -90,6 +90,7 @@ nand_button_rect = pygame.Rect(WIDTH - 110, 340, 90, 30)
 lasso_button_rect = pygame.Rect(WIDTH - 110, 380, 90, 30)
 save_component_button_rect = pygame.Rect(20, 110, 160, 40)
 clock_button_rect = pygame.Rect(WIDTH - 110, 420, 90, 30)
+bridge_button_rect = pygame.Rect(WIDTH - 110, 460, 90, 30)  # Moved below redstone
 
 
 
@@ -105,6 +106,7 @@ item_menu_anim = 0.0  # 0.0 = hidden, 1.0 = fully visible
 
 button_scales = {mode: 1.0 for mode, _, _ in [
     ("redstone", redstone_button_rect, "Redstone"),
+    ("bridge", bridge_button_rect, "Bridge"),
     ("power", power_button_rect, "Power"),
     ("or", or_button_rect, "OR"),
     ("and", and_button_rect, "AND"),
@@ -282,6 +284,19 @@ gold_base = (253, 255, 150)
 gold_light = (253, 255, 117)
 glow_colors = [(*gold_light, alpha) for alpha in range(50, 0, -10)]
 
+# Global counter for unique gate IDs
+gate_counter = 0
+
+def assign_gate_id_to_group(x, y, w, h):
+    global gate_counter
+    gate_id = gate_counter
+    # Assign the gate ID to all tiles that belong to this gate
+    for dy in range(h):
+        for dx in range(w):
+            gx = x + dx
+            gy = y + dy
+            grid[gy][gx]["gate_id"] = gate_id
+    gate_counter += 1
 
 def place_gate(x, y, gate_type, rotation):
     typeOfGate = f"{rotation}-{gate_type}"
@@ -298,6 +313,7 @@ def place_gate(x, y, gate_type, rotation):
             if grid[gy][gx]["type"] != "empty":
                 return  # Already occupied
 
+    # Place the gate and assign the same unique gate ID to all tiles of the gate
     for dy in range(h):
         for dx in range(w):
             gx = x + dx
@@ -308,6 +324,10 @@ def place_gate(x, y, gate_type, rotation):
                 "local_pos": (dx, dy),
                 "powered": False
             }
+
+    # Assign the unique gate ID to all tiles of the gate
+    assign_gate_id_to_group(x, y, w, h)
+
 
 
 
@@ -370,6 +390,69 @@ BLUE = (0, 0, 255)    # RGB for blue
 YELLOW = (255, 255, 0)  # RGB for yellow
 WHITE = (255, 255, 255)  # RGB for white
 
+def draw_cell_inspector():
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+    grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
+    grid_y = int((mouse_y / zoom + camera_y) // GRID_SIZE)
+    if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
+        cell = grid[grid_y][grid_x]
+        lines = [
+            f"Cell: ({grid_x}, {grid_y})",
+            f"Type: {cell.get('type', 'empty')}",
+            f"Powered: {cell.get('powered', False)}"
+        ]
+        if cell["type"] == "gate":
+            gate_type = cell.get("gate_type", "?")
+            local_pos = cell.get("local_pos", "?")
+            gate_id = cell.get("gate_id", "N/A")  # <-- Add this line
+            lines.append(f"Gate ID: {gate_id}")    # <-- Add this line
+            lines.append(f"Gate type: {gate_type}")
+            lines.append(f"Local pos: {local_pos}")
+            gate_def = GATE_DEFINITIONS.get(gate_type)
+            if gate_def:
+                # Show inputs and output positions
+                lines.append(f"Inputs: {gate_def['inputs']}")
+                lines.append(f"Output: {gate_def['output']}")
+                # Show current input values
+                input_vals = []
+                for dx, dy in gate_def["inputs"]:
+                    gx, gy = grid_x - local_pos[0] + dx, grid_y - local_pos[1] + dy
+                    if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                        input_cell = grid[gy][gx]
+                        input_vals.append(input_cell.get("powered", False))
+                    else:
+                        input_vals.append(None)
+                lines.append(f"Input values: {input_vals}")
+                # Show output logic
+                out_x = grid_x - local_pos[0] + gate_def["output"][0]
+                out_y = grid_y - local_pos[1] + gate_def["output"][1]
+                output_logic = None
+                if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+                    output_logic = grid[out_y][out_x].get("powered", False)
+                lines.append(f"Output powered: {output_logic}")
+        elif cell["type"] == "clock":
+            lines.append(f"Frequency: {cell.get('frequency', '?')}")
+            lines.append(f"Timer: {cell.get('timer', '?')}")
+        # Add any other cell-specific info here
+
+        # Draw background box
+        font = pygame.font.Font(None, 24)
+        box_w = 0
+        box_h = 0
+        rendered_lines = []
+        for line in lines:
+            surf = font.render(str(line), True, (255, 255, 255))
+            rendered_lines.append(surf)
+            box_w = max(box_w, surf.get_width())
+            box_h += surf.get_height() + 2
+        box_rect = pygame.Rect(10, 10, box_w + 16, box_h + 10)
+        pygame.draw.rect(screen, (30, 30, 30), box_rect)
+        pygame.draw.rect(screen, (80, 200, 255), box_rect, 2)
+        y = box_rect.y + 5
+        for surf in rendered_lines:
+            screen.blit(surf, (box_rect.x + 8, y))
+            y += surf.get_height() + 2
+
 def draw_hamburger_icon():
     """Draws animated hamburger menu icon that transforms to X when open"""
     global menu_icon_hover, menu_icon_animation
@@ -429,34 +512,97 @@ def clear_lasso_selection():
     lasso_end = None
 
 def propagate_power():
-    # Step 1: Reset
+    # Step 1: Reset all non-clock powered cells
     for row in grid:
         for cell in row:
-            if cell["type"] != "clock":  # Clock retains its state
+            if cell["type"] != "clock":
                 cell["powered"] = False
 
-    # Step 2: Power propagation from power sources
+    # Step 2: Organize gate parts by ID
+    gates_by_id = {}
     for y in range(grid_height):
         for x in range(grid_width):
             cell = grid[y][x]
-            if cell["type"] == "clock":
-                # Toggle clock state based on its frequency
+            if cell["type"] == "gate" and "gate_id" in cell:
+                gates_by_id.setdefault(cell["gate_id"], []).append((x, y, cell))
+
+    # Step 3: Trigger static sources
+    for y in range(grid_height):
+        for x in range(grid_width):
+            cell = grid[y][x]
+            if cell["type"] == "power":
+                propagate_from(x, y)
+            elif cell["type"] == "clock":
                 cell["timer"] += 1
                 if cell["timer"] >= cell["frequency"]:
                     cell["powered"] = not cell["powered"]
                     cell["timer"] = 0
                 if cell["powered"]:
                     propagate_from(x, y)
-            elif cell["type"] == "power":
-                propagate_from(x, y)
 
-    # Step 3: Evaluate gates
-    for y in range(grid_height):
-        for x in range(grid_width):
-            cell = grid[y][x]
-            if cell["type"] == "gate" and cell["local_pos"] == (0, 0):  # Top-left of gate
-                gate_def = GATE_DEFINITIONS[cell["gate_type"]]
-                evaluate_gate(x, y, gate_def)
+    # Step 4: Loop until stable (max 20 iterations)
+    changed = True
+    iterations = 0
+    max_iterations = 20
+
+    while changed and iterations < max_iterations:
+        changed = False
+        iterations += 1
+
+        for gate_id, gate_cells in gates_by_id.items():
+            for x, y, cell in gate_cells:
+                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+                if not gate_def or cell["local_pos"] != (0, 0):
+                    continue
+
+                out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
+
+                if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
+                    continue
+
+                out_cell = grid[out_y][out_x]
+                if out_cell["powered"] != output_logic:
+                    out_cell["powered"] = output_logic
+                    propagate_from(out_x, out_y)
+                    changed = True
+
+
+
+
+
+
+
+def evaluate_gate_output(x, y, definition):
+    inputs_powered = []
+    for dx, dy in definition["inputs"]:
+        gx, gy = x + dx, y + dy
+        if 0 <= gx < grid_width and 0 <= gy < grid_height:
+            inputs_powered.append(grid[gy][gx]["powered"])
+            print(f"Input cell ({gx}, {gy}) powered: {grid[gy][gx]['powered']}")
+    print(f"Evaluating NAND gate at ({x}, {y}) with inputs: {inputs_powered}")
+   
+
+    logic = definition["logic"]
+    if logic == "or":
+        output_logic = any(inputs_powered)
+    elif logic == "and":
+        output_logic = all(inputs_powered) and len(inputs_powered) == len(definition["inputs"])
+    elif logic == "not":
+        output_logic = not inputs_powered[0] if inputs_powered else True
+    elif logic == "xor":
+        output_logic = sum(inputs_powered) == 1
+    elif logic == "nor":
+        output_logic = not any(inputs_powered)
+    elif logic == "nand":
+        output_logic = not all(inputs_powered)
+    else:
+        output_logic = False
+
+    out_dx, out_dy = definition["output"]
+    out_x, out_y = x + out_dx, y + out_dy
+
+    print(f" -> output: {output_logic}")
+    return out_x, out_y, output_logic
 
 
 def evaluate_gate(x, y, definition):
@@ -465,7 +611,8 @@ def evaluate_gate(x, y, definition):
         gx, gy = x + dx, y + dy
         if 0 <= gx < grid_width and 0 <= gy < grid_height:
             inputs_powered.append(grid[gy][gx]["powered"])
-    print(f"{definition['logic'].upper()} gate at ({x},{y}) inputs: {inputs_powered}")  # Debug
+            
+    
 
     output_logic = False
     if definition["logic"] == "or":
@@ -479,8 +626,9 @@ def evaluate_gate(x, y, definition):
     elif definition["logic"] == "nor":
         output_logic = not any(inputs_powered)
     elif definition["logic"] == "nand":
-        output_logic = not (all(inputs_powered) and len(inputs_powered) == len(definition["inputs"]))
+        output_logic = not all(inputs_powered)
 
+    print(f"NAND gate output: {output_logic}")
     out_dx, out_dy = definition["output"]
     out_x, out_y = x + out_dx, y + out_dy
     if output_logic:
@@ -497,37 +645,68 @@ def has_powered_input(x, y):
                 return True
     return False
 
-def propagate_from(x, y):
-    stack = [(x, y)]
+def propagate_from(x, y, direction=None):
+    stack = [(x, y, direction)]
     visited = set()
 
     while stack:
-        cx, cy = stack.pop()
-        if (cx, cy) in visited:
+        cx, cy, direction = stack.pop()
+        if (cx, cy, direction) in visited:
             continue
-        visited.add((cx, cy))
+        visited.add((cx, cy, direction))
 
-        if 0 <= cx < grid_width and 0 <= cy < grid_height:
-            cell = grid[cy][cx]
-            if cell["type"] in ["redstone", "power", "or", "clock"]:
-                if not cell["powered"] or cell["type"] == "clock":
+        if not (0 <= cx < grid_width and 0 <= cy < grid_height):
+            continue
+
+        cell = grid[cy][cx]
+
+        if cell["type"] in ["redstone", "power", "or", "clock"]:
+            if not cell["powered"] or cell["type"] == "clock":
+                cell["powered"] = True
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    stack.append((nx, ny, ndir))
+
+        elif cell["type"] == "bridge":
+            if direction == "horizontal":
+                for nx, ny in [(cx+1, cy), (cx-1, cy)]:
+                    stack.append((nx, ny, "horizontal"))
+            elif direction == "vertical":
+                for nx, ny in [(cx, cy+1), (cx, cy-1)]:
+                    stack.append((nx, ny, "vertical"))
+            else:
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    stack.append((nx, ny, ndir))
+
+        elif cell["type"] == "gate":
+            gate_type = cell.get("gate_type")
+            local_pos = cell.get("local_pos")
+            gate_def = GATE_DEFINITIONS.get(gate_type, {})
+
+            if local_pos in gate_def.get("inputs", []):
+                cell["powered"] = True
+                continue
+
+            if local_pos == gate_def.get("output"):
+                if not cell["powered"]:
                     cell["powered"] = True
-                    neighbors = [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]
-                    stack.extend(neighbors)
-            elif cell["type"] == "gate":
-                gate_type = cell.get("gate_type")
-                local_pos = cell.get("local_pos")
-                gate_def = GATE_DEFINITIONS.get(gate_type, {})
-                # Allow input cells to be powered
-                if local_pos in gate_def.get("inputs", []):
-                    if not cell["powered"]:
-                        cell["powered"] = True
-                # Allow output cell to emit power
-                if local_pos == gate_def.get("output"):
-                    if not cell["powered"]:
-                        cell["powered"] = True
-                    neighbors = [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]
-                    stack.extend(neighbors)
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    stack.append((nx, ny, ndir))
+
 
                     
 def draw_grid():
@@ -559,6 +738,12 @@ def draw_grid():
                 if cell["type"] == "redstone":
                     color = (255, 0, 0, alpha) if cell["powered"] else (100, 0, 0, alpha)
                     pygame.draw.rect(screen, color[:3], rect)
+                if cell["type"] == "bridge":
+                    # Draw a cross or a special color
+                    pygame.draw.rect(screen, (120, 120, 255), rect)
+                    # Optionally, draw a cross to indicate both directions
+                    pygame.draw.line(screen, (200, 200, 255), rect.midleft, rect.midright, 3)
+                    pygame.draw.line(screen, (200, 200, 255), rect.midtop, rect.midbottom, 3)
                 elif cell["type"] == "power":
                     pygame.draw.rect(screen, (255, 255, 0), rect)
                 elif cell["type"] == "clock":
@@ -803,6 +988,7 @@ def draw_grid():
         pygame.draw.rect(screen, (255, 255, 0), (grid_x, grid_y, size, size), 3)
 
     draw_hamburger_icon()
+    draw_cell_inspector()
 
     # --- ITEM MENU SLIDE-IN ---
     menu_width = 120
@@ -813,6 +999,7 @@ def draw_grid():
     GATE_COLORS = {
         "redstone": (255, 0, 0),
         "power": (255, 255, 0),
+        "bridge": (120, 120, 255),
         "or": (255, 130, 0),
         "and": (0, 255, 0),
         "not": (30, 30, 180),
@@ -826,6 +1013,7 @@ def draw_grid():
 
     button_defs = [
         ("redstone", redstone_button_rect, "Redstone"),
+        ("bridge", bridge_button_rect, "Bridge"),
         ("power", power_button_rect, "Power"),
         ("or", or_button_rect, "OR"),
         ("and", and_button_rect, "AND"),
@@ -847,6 +1035,7 @@ def draw_grid():
         is_hover = rect.move(slide_offset, 0).collidepoint(mouse_pos)
         is_active = (
             (mode == "redstone" and placement_mode == "redstone") or
+            (mode == "bridge" and placement_mode == "bridge") or
             (mode == "power" and placement_mode == "power") or
             (mode == "or" and placement_mode == "or") or
             (mode == "and" and placement_mode == "and") or
@@ -1156,6 +1345,10 @@ while running:
                     placement_mode = "redstone"
                     clear_lasso_selection()
                     continue
+                elif bridge_button_rect.collidepoint(mx, my):
+                    placement_mode = "bridge"
+                    clear_lasso_selection()
+                    continue
                 elif power_button_rect.collidepoint(mx, my):
                     placement_mode = "power"
                     clear_lasso_selection()
@@ -1216,6 +1409,8 @@ while running:
                     if 0 <= x < grid_width and 0 <= y < grid_height:
                         if placement_mode == "redstone":
                             grid[y][x] = {"type": "redstone", "powered": False}
+                        elif placement_mode == "bridge":
+                            grid[y][x] = {"type": "bridge", "powered": False}
                         elif placement_mode == "power":
                             grid[y][x] = {"type": "power", "powered": True}
                         elif placement_mode == "or":
