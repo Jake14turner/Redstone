@@ -549,22 +549,75 @@ def propagate_power():
         for gate_id, gate_cells in gates_by_id.items():
             for x, y, cell in gate_cells:
                 gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
-                if not gate_def or cell["local_pos"] != (0, 0):
+                if cell["local_pos"] != (0, 0):
                     continue
-
+                    #15, 8
                 out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
 
                 if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
                     continue
 
                 out_cell = grid[out_y][out_x]
-                if out_cell["powered"] != output_logic:
-                    out_cell["powered"] = output_logic
+                
+                out_cell["powered"] = output_logic
+                if(output_logic):
                     propagate_from(out_x, out_y)
-                    changed = True
+                else:
+                    propagate_no_power(out_x, out_y)
+                changed = True
 
 
+def propagate_no_power(x, y, direction=None):
+    stack = [(x, y, direction)]
+    visited = set()
 
+    while stack:
+        cx, cy, direction = stack.pop()
+        if (cx, cy, direction) in visited:
+            continue
+        visited.add((cx, cy, direction))
+
+        if not (0 <= cx < grid_width and 0 <= cy < grid_height):
+            continue
+
+        cell = grid[cy][cx]
+        cell["powered"] = False
+
+        if cell["type"] in ["redstone", "power", "or", "clock"]:
+            for nx, ny, ndir in [
+                (cx+1, cy, "horizontal"),
+                (cx-1, cy, "horizontal"),
+                (cx, cy+1, "vertical"),
+                (cx, cy-1, "vertical")
+            ]:
+                stack.append((nx, ny, ndir))
+        elif cell["type"] == "bridge":
+            if direction == "horizontal":
+                for nx, ny in [(cx+1, cy), (cx-1, cy)]:
+                    stack.append((nx, ny, "horizontal"))
+            elif direction == "vertical":
+                for nx, ny in [(cx, cy+1), (cx, cy-1)]:
+                    stack.append((nx, ny, "vertical"))
+            else:
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    stack.append((nx, ny, ndir))
+        elif cell["type"] == "gate":
+            gate_type = cell.get("gate_type")
+            local_pos = cell.get("local_pos")
+            gate_def = GATE_DEFINITIONS.get(gate_type, {})
+            if local_pos in gate_def.get("inputs", []) or local_pos == gate_def.get("output"):
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    stack.append((nx, ny, ndir))
 
 
 
@@ -694,21 +747,21 @@ def propagate_from(x, y, direction=None):
                 continue
 
             if local_pos == gate_def.get("output"):
-                if not cell["powered"]:
-                    cell["powered"] = True
-                for nx, ny, ndir in [
-                    (cx+1, cy, "horizontal"),
-                    (cx-1, cy, "horizontal"),
-                    (cx, cy+1, "vertical"),
-                    (cx, cy-1, "vertical")
-                ]:
-                    stack.append((nx, ny, ndir))
+                # Only propagate if the output is already powered by the gate logic
+                if cell["powered"]:
+                    for nx, ny, ndir in [
+                        (cx+1, cy, "horizontal"),
+                        (cx-1, cy, "horizontal"),
+                        (cx, cy+1, "vertical"),
+                        (cx, cy-1, "vertical")
+                    ]:
+                        stack.append((nx, ny, ndir))
+                # Do NOT set cell["powered"] here!
 
-
+needs_propagation = True
                     
 def draw_grid():
     global copy_button_rect, delete_button_rect_popup, paste_button_rect
-    propagate_power() 
 
     screen.fill((30, 30, 30))
     global zoom, camera_x, camera_y
@@ -1378,25 +1431,35 @@ while running:
                     if 0 <= x < grid_width and 0 <= y < grid_height:
                         if placement_mode == "redstone":
                             grid[y][x] = {"type": "redstone", "powered": False}
+                            propagate_power()
                         elif placement_mode == "bridge":
                             grid[y][x] = {"type": "bridge", "powered": False}
+                            propagate_power()
                         elif placement_mode == "power":
                             grid[y][x] = {"type": "power", "powered": True}
+                            propagate_power()
                         elif placement_mode == "or":
                             place_gate(x, y, "or", rotation)
+                            propagate_power()
                         elif placement_mode == "and":
                             place_gate(x, y, "and", rotation)
+                            propagate_power()
                         elif placement_mode == "not":
                             place_gate(x, y, "not", rotation)
+                            propagate_power()
                         elif placement_mode == "xor":
                             place_gate(x, y, "xor", rotation)
+                            propagate_power()
                         elif placement_mode == "nor":
                             place_gate(x, y, "nor", rotation)
+                            propagate_power()
                         elif placement_mode == "nand":
                             place_gate(x, y, "nand", rotation)
+                            propagate_power()
                         elif placement_mode == "clock":
                             frequency = 30
                             grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
+                            propagate_power()
                         elif placement_mode == "delete":
                             cell = grid[y][x]
                             if cell["type"] == "gate":
@@ -1415,6 +1478,7 @@ while running:
                                                 grid[gy][gx] = {"type": "empty", "powered": False}
                             else:
                                 grid[y][x] = {"type": "empty", "powered": False}
+                            propagate_power()
 
                 elif event.button == 3:
                     panning = True
