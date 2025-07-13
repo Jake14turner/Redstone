@@ -321,7 +321,9 @@ def place_gate(x, y, gate_type, rotation):
                 "type": "gate",
                 "gate_type": typeOfGate,
                 "local_pos": (dx, dy),
-                "powered": False
+                "powered": False,
+                "previous_output": False,  # Add previous state tracking
+                "evaluated_this_cycle": False  # Track if evaluated this cycle
             }
 
 
@@ -510,6 +512,29 @@ def clear_lasso_selection():
     lasso_end = None
 
 def propagate_power():
+    # Store previous outputs BEFORE resetting power states
+    gates_by_id = {}
+    for y in range(grid_height):
+        for x in range(grid_width):
+            cell = grid[y][x]
+            if cell["type"] == "gate" and "gate_id" in cell:
+                gates_by_id.setdefault(cell["gate_id"], []).append((x, y, cell))
+    
+    # Store previous outputs for all gates BEFORE clearing power
+    print("=== Storing previous outputs ===")
+    for gate_id, gate_cells in gates_by_id.items():
+        for x, y, cell in gate_cells:
+            if cell["local_pos"] == (0, 0):  # Only gate origins
+                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+                out_dx, out_dy = gate_def["output"]
+                out_x, out_y = x + out_dx, y + out_dy
+                if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+                    output_cell = grid[out_y][out_x]
+                    prev_output = output_cell.get("powered", False)
+                    output_cell["previous_output"] = prev_output
+                    print(f"Gate at ({x}, {y}): storing previous output {prev_output}")
+
+    # NOW reset all power states (except clocks)
     for row in grid:
         for cell in row:
             if cell["type"] != "clock":
@@ -528,7 +553,9 @@ def propagate_power():
         for x in range(grid_width):
             cell = grid[y][x]
             if cell["type"] == "power":
+                
                 propagate_from(x, y)
+               
             elif cell["type"] == "clock":
                 cell["timer"] += 1
                 if cell["timer"] >= cell["frequency"]:
@@ -536,6 +563,14 @@ def propagate_power():
                     cell["timer"] = 0
                 if cell["powered"]:
                     propagate_from(x, y)
+
+    for y in range(grid_height):
+            for x in range(grid_width):
+                if(x == 0 and y == 16):
+                    cell = grid[y][x]
+                    if cell["type"] == "empty":
+                        print("hi")
+
 
 
     changed = True
@@ -546,25 +581,59 @@ def propagate_power():
         changed = False
         iterations += 1
 
+        # Reset evaluation flags for all gates at start of each cycle
         for gate_id, gate_cells in gates_by_id.items():
             for x, y, cell in gate_cells:
-                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
-                if cell["local_pos"] != (0, 0):
-                    continue
-                    #15, 8
-                out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
+                cell["evaluated_this_cycle"] = False
 
-                if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
-                    continue
+        # Sort all gate origins by x-coordinate (left to right)
+        gate_origins = []
+        for gate_id, gate_cells in gates_by_id.items():
+            for x, y, cell in gate_cells:
+                if cell["local_pos"] == (0, 0):  # Only gate origins
+                    gate_origins.append((x, y, cell))
+        
+        # Sort by x-coordinate first, then y-coordinate
+        gate_origins.sort(key=lambda gate: (gate[0], gate[1]))
+        
+        for x, y, cell in gate_origins:
+            gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+            
+            print(f"\nProcessing gate at ({x}, {y}) - {cell['gate_type']}")
+            
+            # Previous output was already stored before grid reset
+            out_dx, out_dy = gate_def["output"]
+            out_x, out_y = x + out_dx, y + out_dy
+            if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+                output_cell = grid[out_y][out_x]
+                print(f"  Previous output was: {output_cell.get('previous_output', False)}")
+            
+            out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
 
-                out_cell = grid[out_y][out_x]
-                
+            if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
+                print(f"  Output position ({out_x}, {out_y}) out of bounds!")
+                continue
+
+            out_cell = grid[out_y][out_x]
+            
+            # Mark this gate as evaluated
+            out_cell["evaluated_this_cycle"] = True
+            print(f"  Marked gate as evaluated this cycle")
+            
+            # Only set changed = True if the output actually changed
+            if out_cell["powered"] != output_logic:
+                old_value = out_cell["powered"]
                 out_cell["powered"] = output_logic
-                if(output_logic):
+                print(f"  OUTPUT CHANGED: {old_value} -> {output_logic}")
+                if output_logic:
+                    print(f"  Propagating power from ({out_x}, {out_y})")
                     propagate_from(out_x, out_y)
                 else:
+                    print(f"  Removing power from ({out_x}, {out_y})")
                     propagate_no_power(out_x, out_y)
                 changed = True
+            else:
+                print(f"  No change in output (remains {output_logic})")
 
 
 def propagate_no_power(x, y, direction=None):
@@ -619,18 +688,110 @@ def propagate_no_power(x, y, direction=None):
                 ]:
                     stack.append((nx, ny, ndir))
 
+def trace_power_source(x, y, exclude_gate_id=None):
+    """Trace back along wires to find the actual power source for this position"""
+    visited = set()
+    
+    # Start by looking at adjacent cells, not the current cell itself
+    # This avoids starting within the same gate
+    initial_cells = []
+    for nx, ny in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
+        if 0 <= nx < grid_width and 0 <= ny < grid_height:
+            neighbor_cell = grid[ny][nx]
+            # Skip cells that belong to the same gate we're evaluating
+            if exclude_gate_id is not None and neighbor_cell.get("gate_id") == exclude_gate_id:
+                print(f"    Skipping ({nx}, {ny}) - same gate ID {exclude_gate_id}")
+                continue
+            initial_cells.append((nx, ny))
+    
+    stack = initial_cells
+    
+    while stack:
+        cx, cy = stack.pop()
 
+        if(cx == 7 and cy == 9):
+            print("hi")
+        if (cx, cy) in visited:
+            continue
+        visited.add((cx, cy))
+        
+        if not (0 <= cx < grid_width and 0 <= cy < grid_height):
+            continue
+            
+        cell = grid[cy][cx]
+        
+        # Skip cells that belong to the same gate we're evaluating
+        if exclude_gate_id is not None and cell.get("gate_id") == exclude_gate_id:
+            print(f"    Skipping ({cx}, {cy}) - same gate ID {exclude_gate_id}")
+            continue
+        
+        # If we find a power source, return its state
+        if cell["type"] == "power":
+            print(f"    Found power source at ({cx}, {cy}): {cell.get('powered', False)}")
+            return cell.get("powered", False)
+        elif cell["type"] == "clock":
+            print(f"    Found clock at ({cx}, {cy}): {cell.get('powered', False)}")
+            return cell.get("powered", False)
+        elif cell["type"] == "gate":
+            gate_def = GATE_DEFINITIONS.get(cell["gate_type"], {})
+            local_pos = cell.get("local_pos", (0, 0))
+            
+            # If this is a gate output position
+            if local_pos == gate_def.get("output"):
+                # Check if this gate has been evaluated this cycle
+                if cell.get("evaluated_this_cycle", False):
+                    print(f"    Found evaluated gate output at ({cx}, {cy}): {cell.get('powered', False)}")
+                    return cell.get("powered", False)
+                else:
+                    print(f"    Found unevaluated gate output at ({cx}, {cy}): using previous {cell.get('previous_output', False)}")
+                    return cell.get("previous_output", False)
+            # If it's a gate input, DON'T continue tracing - this gate is consuming power, not providing it
+            elif local_pos in gate_def.get("inputs", []):
+                print(f"    Found gate input at ({cx}, {cy}) - this gate consumes power, not providing it. Skipping.")
+                continue  # Don't trace through gate inputs
+        # If it's redstone or bridge, continue tracing
+        elif cell["type"] in ["redstone", "bridge"]:
+            if cell["type"] == "bridge":
+                # Bridge can conduct both horizontally and vertically
+                for nx, ny in [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]:
+                    if (nx, ny) not in visited:
+                        stack.append((nx, ny))
+            else:
+                # Regular redstone conducts in all directions
+                for nx, ny in [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]:
+                    if (nx, ny) not in visited:
+                        stack.append((nx, ny))
+    
+    # No power source found
+    print(f"    No power source found for ({x}, {y})")
+    return False
 
 
 def evaluate_gate_output(x, y, definition):
+    print(f"\n=== Evaluating gate at ({x}, {y}) ===")
+    
+    # Get the current gate's ID to avoid tracing through it
+    current_gate_id = None
+    if 0 <= x < grid_width and 0 <= y < grid_height:
+        current_gate_id = grid[y][x].get("gate_id")
+        print(f"  Current gate ID: {current_gate_id}")
+    
     inputs_powered = []
+    
     for dx, dy in definition["inputs"]:
         gx, gy = x + dx, y + dy
         if 0 <= gx < grid_width and 0 <= gy < grid_height:
-            inputs_powered.append(grid[gy][gx]["powered"])
-            print(f"Input cell ({gx}, {gy}) powered: {grid[gy][gx]['powered']}")
-    print(f"Evaluating NAND gate at ({x}, {y}) with inputs: {inputs_powered}")
-   
+            print(f"  Tracing power for input at ({gx}, {gy})")
+            
+            # Trace back from this input position to find the actual power source
+            # Pass the current gate ID to avoid tracing through the same gate
+            input_value = trace_power_source(gx, gy, current_gate_id)
+            print(f"  Input ({gx}, {gy}): traced power = {input_value}")
+            
+            inputs_powered.append(input_value)
+        
+    print(f"  Gate type: {definition['logic']}, All inputs: {inputs_powered}")
+
 
     logic = definition["logic"]
     if logic == "or":
@@ -651,7 +812,7 @@ def evaluate_gate_output(x, y, definition):
     out_dx, out_dy = definition["output"]
     out_x, out_y = x + out_dx, y + out_dy
 
-    print(f" -> output: {output_logic}")
+    print(f"  -> Final output: {output_logic} at ({out_x}, {out_y})")
     return out_x, out_y, output_logic
 
 
@@ -1242,11 +1403,55 @@ def draw_components_list(components, selected_index):
         screen.blit(preview, (400, 80))
 
 def load_component_to_grid(component, index=None):
-    global grid, grid_width, grid_height, editing_component_index
+    global grid, grid_width, grid_height, editing_component_index, gate_counter
     comp_w, comp_h = component["width"], component["height"]
     comp_grid = component["grid"]
     grid_width, grid_height = comp_w, comp_h
-    grid = [[cell.copy() for cell in row] for row in comp_grid]
+    
+    # Create new grid and fix tuple conversion for gate local_pos
+    grid = []
+    for row in comp_grid:
+        new_row = []
+        for cell in row:
+            new_cell = cell.copy()
+            # Convert local_pos from list back to tuple if it's a gate
+            if new_cell.get("type") == "gate" and "local_pos" in new_cell:
+                if isinstance(new_cell["local_pos"], list):
+                    new_cell["local_pos"] = tuple(new_cell["local_pos"])
+            new_row.append(new_cell)
+        grid.append(new_row)
+    
+    # Reset gate_counter and reassign all gate IDs to ensure uniqueness
+    gate_counter = 0
+    
+    # Find all gate origins (gates with local_pos (0,0)) and reassign IDs
+    gate_origins = []
+    for y in range(grid_height):
+        for x in range(grid_width):
+            cell = grid[y][x]
+            if cell.get("type") == "gate" and cell.get("local_pos") == (0, 0):
+                gate_origins.append((x, y))
+    
+    # Reassign gate IDs for each gate group
+    for origin_x, origin_y in gate_origins:
+        origin_cell = grid[origin_y][origin_x]
+        gate_type = origin_cell.get("gate_type")
+        if gate_type in GATE_DEFINITIONS:
+            gate_def = GATE_DEFINITIONS[gate_type]
+            w, h = gate_def["size"]
+            
+            # Assign new gate ID to all cells in this gate
+            new_gate_id = gate_counter
+            for dy in range(h):
+                for dx in range(w):
+                    gx, gy = origin_x + dx, origin_y + dy
+                    if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                        if grid[gy][gx].get("type") == "gate":
+                            grid[gy][gx]["gate_id"] = new_gate_id
+            
+            gate_counter += 1
+    
+    print(f"Reassigned gate IDs after loading component. Next gate_counter: {gate_counter}")
     editing_component_index = index
 
 
@@ -1353,6 +1558,8 @@ while running:
                     selected_cells.clear()
                     lasso_start = None
                     lasso_end = None
+                    gate_counter = 0  # Reset gate counter for new component
+                    print("Started new component - reset gate_counter to 0")
                     state = BUILD_MODE
                 elif 320 <= my <= 370:
                     state = VIEW_COMPONENTS
@@ -1432,33 +1639,43 @@ while running:
                         if placement_mode == "redstone":
                             grid[y][x] = {"type": "redstone", "powered": False}
                             propagate_power()
+                            propagate_power()
                         elif placement_mode == "bridge":
                             grid[y][x] = {"type": "bridge", "powered": False}
+                            propagate_power()
                             propagate_power()
                         elif placement_mode == "power":
                             grid[y][x] = {"type": "power", "powered": True}
                             propagate_power()
+                            propagate_power()
                         elif placement_mode == "or":
                             place_gate(x, y, "or", rotation)
+                            propagate_power()
                             propagate_power()
                         elif placement_mode == "and":
                             place_gate(x, y, "and", rotation)
                             propagate_power()
+                            propagate_power()
                         elif placement_mode == "not":
                             place_gate(x, y, "not", rotation)
+                            propagate_power()
                             propagate_power()
                         elif placement_mode == "xor":
                             place_gate(x, y, "xor", rotation)
                             propagate_power()
+                            propagate_power()
                         elif placement_mode == "nor":
                             place_gate(x, y, "nor", rotation)
+                            propagate_power()
                             propagate_power()
                         elif placement_mode == "nand":
                             place_gate(x, y, "nand", rotation)
                             propagate_power()
+                            propagate_power()
                         elif placement_mode == "clock":
                             frequency = 30
                             grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
+                            propagate_power()
                             propagate_power()
                         elif placement_mode == "delete":
                             cell = grid[y][x]
@@ -1478,6 +1695,7 @@ while running:
                                                 grid[gy][gx] = {"type": "empty", "powered": False}
                             else:
                                 grid[y][x] = {"type": "empty", "powered": False}
+                            propagate_power()
                             propagate_power()
 
                 elif event.button == 3:
@@ -1543,3 +1761,4 @@ while running:
     clock.tick(60)
 
 pygame.quit()
+
