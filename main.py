@@ -2,7 +2,7 @@ import pygame
 import math  
 import json
 import os
-
+#fixed d - latch logic
 COMPONENTS_FILE = "components.json"
 VIEW_COMPONENTS = "view_components"
 NAMING_COMPONENT = "naming_component"
