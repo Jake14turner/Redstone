@@ -692,28 +692,28 @@ def trace_power_source(x, y, exclude_gate_id=None):
     """Trace back along wires to find the actual power source for this position"""
     visited = set()
     
-    # Start by looking at adjacent cells, not the current cell itself
+    # Start by looking at adjacent cells with their directions
     # This avoids starting within the same gate
     initial_cells = []
-    for nx, ny in [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]:
+    for nx, ny, ndir in [(x+1, y, "horizontal"), (x-1, y, "horizontal"), (x, y+1, "vertical"), (x, y-1, "vertical")]:
         if 0 <= nx < grid_width and 0 <= ny < grid_height:
             neighbor_cell = grid[ny][nx]
             # Skip cells that belong to the same gate we're evaluating
             if exclude_gate_id is not None and neighbor_cell.get("gate_id") == exclude_gate_id:
                 print(f"    Skipping ({nx}, {ny}) - same gate ID {exclude_gate_id}")
                 continue
-            initial_cells.append((nx, ny))
+            initial_cells.append((nx, ny, ndir))
     
     stack = initial_cells
     
     while stack:
-        cx, cy = stack.pop()
+        cx, cy, direction = stack.pop()
 
         if(cx == 7 and cy == 9):
             print("hi")
-        if (cx, cy) in visited:
+        if (cx, cy, direction) in visited:
             continue
-        visited.add((cx, cy))
+        visited.add((cx, cy, direction))
         
         if not (0 <= cx < grid_width and 0 <= cy < grid_height):
             continue
@@ -749,18 +749,50 @@ def trace_power_source(x, y, exclude_gate_id=None):
             elif local_pos in gate_def.get("inputs", []):
                 print(f"    Found gate input at ({cx}, {cy}) - this gate consumes power, not providing it. Skipping.")
                 continue  # Don't trace through gate inputs
-        # If it's redstone or bridge, continue tracing
-        elif cell["type"] in ["redstone", "bridge"]:
-            if cell["type"] == "bridge":
-                # Bridge can conduct both horizontally and vertically
-                for nx, ny in [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]:
-                    if (nx, ny) not in visited:
-                        stack.append((nx, ny))
+        # Handle redstone, power, or, clock with proper propagation
+        elif cell["type"] in ["redstone", "power", "or", "clock"]:
+            for nx, ny, ndir in [
+                (cx+1, cy, "horizontal"),
+                (cx-1, cy, "horizontal"),
+                (cx, cy+1, "vertical"),
+                (cx, cy-1, "vertical")
+            ]:
+                if (nx, ny, ndir) not in visited:
+                    stack.append((nx, ny, ndir))
+        # Handle bridge with proper directional logic - THIS IS THE KEY FIX
+        elif cell["type"] == "bridge":
+            if direction == "horizontal":
+                for nx, ny in [(cx+1, cy), (cx-1, cy)]:
+                    if (nx, ny, "horizontal") not in visited:
+                        stack.append((nx, ny, "horizontal"))
+            elif direction == "vertical":
+                for nx, ny in [(cx, cy+1), (cx, cy-1)]:
+                    if (nx, ny, "vertical") not in visited:
+                        stack.append((nx, ny, "vertical"))
             else:
-                # Regular redstone conducts in all directions
-                for nx, ny in [(cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)]:
-                    if (nx, ny) not in visited:
-                        stack.append((nx, ny))
+                # If direction is None, try both directions
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    if (nx, ny, ndir) not in visited:
+                        stack.append((nx, ny, ndir))
+        # Handle other gate cells (inputs/outputs)
+        elif cell["type"] == "gate":
+            gate_type = cell.get("gate_type")
+            local_pos = cell.get("local_pos")
+            gate_def = GATE_DEFINITIONS.get(gate_type, {})
+            if local_pos in gate_def.get("inputs", []) or local_pos == gate_def.get("output"):
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    if (nx, ny, ndir) not in visited:
+                        stack.append((nx, ny, ndir))
     
     # No power source found
     print(f"    No power source found for ({x}, {y})")
@@ -1761,4 +1793,3 @@ while running:
     clock.tick(60)
 
 pygame.quit()
-
