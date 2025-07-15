@@ -133,6 +133,11 @@ zoom_bar_anim = 0.0
 zoom_bar_height = 60
 zoom_slider_dragging = False
 
+# Performance tracking
+frame_count = 0
+fps_timer = 0
+current_fps = 0
+
 
 zoom_slider_dragging = False
 
@@ -453,12 +458,23 @@ YELLOW = (255, 255, 0)
 WHITE = (255, 255, 255)  
 
 def draw_cell_inspector():
+    global frame_count, fps_timer, current_fps
+    
+    # Update FPS counter
+    frame_count += 1
+    fps_timer += clock.get_time()
+    if fps_timer >= 1000:  # Update every second
+        current_fps = frame_count
+        frame_count = 0
+        fps_timer = 0
+    
     mouse_x, mouse_y = pygame.mouse.get_pos()
     grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
     grid_y = int((mouse_y / zoom + camera_y) // GRID_SIZE)
     if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
         cell = grid[grid_y][grid_x]
         lines = [
+            f"FPS: {current_fps}",  # Add FPS display
             f"Cell: ({grid_x}, {grid_y})",
             f"Type: {cell.get('type', 'empty')}",
             f"Powered: {cell.get('powered', False)}"
@@ -808,51 +824,46 @@ def place_component(component, x, y):
     
     print(f"Component '{component['name']}' placed at ({x}, {y})")
 
-def propagate_power():
-    # Store previous outputs BEFORE resetting power states
+def collect_gates_by_id():
+    """Collect all gates organized by their gate_id in a single pass"""
     gates_by_id = {}
     for y in range(grid_height):
         for x in range(grid_width):
             cell = grid[y][x]
             if cell["type"] == "gate" and "gate_id" in cell:
                 gates_by_id.setdefault(cell["gate_id"], []).append((x, y, cell))
-    
-    # Store previous outputs for all gates BEFORE clearing power
+    return gates_by_id
+
+def store_previous_gate_outputs(gates_by_id):
+    """Store previous gate outputs before resetting power states"""
     print("=== Storing previous outputs ===")
     for gate_id, gate_cells in gates_by_id.items():
         for x, y, cell in gate_cells:
             if cell["local_pos"] == (0, 0):  # Only gate origins
                 gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
-                out_dx, out_dy = gate_def["output"]
-                out_x, out_y = x + out_dx, y + out_dy
-                if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
-                    output_cell = grid[out_y][out_x]
-                    prev_output = output_cell.get("powered", False)
-                    output_cell["previous_output"] = prev_output
-                    print(f"Gate at ({x}, {y}): storing previous output {prev_output}")
+                if gate_def:
+                    out_dx, out_dy = gate_def["output"]
+                    out_x, out_y = x + out_dx, y + out_dy
+                    if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+                        output_cell = grid[out_y][out_x]
+                        prev_output = output_cell.get("powered", False)
+                        output_cell["previous_output"] = prev_output
+                        print(f"Gate at ({x}, {y}): storing previous output {prev_output}")
 
-    # NOW reset all power states (except clocks)
+def reset_power_states():
+    """Reset all power states except for clocks in a single pass"""
     for row in grid:
         for cell in row:
             if cell["type"] != "clock":
                 cell["powered"] = False
 
-
-    gates_by_id = {}
-    for y in range(grid_height):
-        for x in range(grid_width):
-            cell = grid[y][x]
-            if cell["type"] == "gate" and "gate_id" in cell:
-                gates_by_id.setdefault(cell["gate_id"], []).append((x, y, cell))
-
-
+def process_power_sources_and_clocks():
+    """Process power sources and clocks in a single grid pass"""
     for y in range(grid_height):
         for x in range(grid_width):
             cell = grid[y][x]
             if cell["type"] == "power":
-                
                 propagate_from(x, y)
-               
             elif cell["type"] == "clock":
                 cell["timer"] += 1
                 if cell["timer"] >= cell["frequency"]:
@@ -861,76 +872,99 @@ def propagate_power():
                 if cell["powered"]:
                     propagate_from(x, y)
 
-    for y in range(grid_height):
-            for x in range(grid_width):
-                if(x == 0 and y == 16):
-                    cell = grid[y][x]
-                    if cell["type"] == "empty":
-                        print("hi")
+def get_sorted_gate_origins(gates_by_id):
+    """Get all gate origins sorted by position for consistent evaluation order"""
+    gate_origins = []
+    for gate_id, gate_cells in gates_by_id.items():
+        for x, y, cell in gate_cells:
+            if cell["local_pos"] == (0, 0):  # Only gate origins
+                gate_origins.append((x, y, cell))
+    
+    # Sort by x-coordinate first, then y-coordinate for deterministic order
+    gate_origins.sort(key=lambda gate: (gate[0], gate[1]))
+    return gate_origins
 
+def reset_gate_evaluation_flags(gates_by_id):
+    """Reset evaluation flags for all gates"""
+    for gate_id, gate_cells in gates_by_id.items():
+        for x, y, cell in gate_cells:
+            cell["evaluated_this_cycle"] = False
 
+def evaluate_single_gate(x, y, cell, gate_def):
+    """Evaluate a single gate and update its output if changed"""
+    print(f"\nProcessing gate at ({x}, {y}) - {cell['gate_type']}")
+    
+    # Get previous output for debugging
+    out_dx, out_dy = gate_def["output"]
+    out_x, out_y = x + out_dx, y + out_dy
+    if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+        output_cell = grid[out_y][out_x]
+        print(f"  Previous output was: {output_cell.get('previous_output', False)}")
+    
+    # Evaluate gate logic
+    out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
 
+    if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
+        print(f"  Output position ({out_x}, {out_y}) out of bounds!")
+        return False
+
+    out_cell = grid[out_y][out_x]
+    
+    # Mark this gate as evaluated
+    out_cell["evaluated_this_cycle"] = True
+    print(f"  Marked gate as evaluated this cycle")
+    
+    # Check if output changed and propagate accordingly
+    if out_cell["powered"] != output_logic:
+        old_value = out_cell["powered"]
+        out_cell["powered"] = output_logic
+        print(f"  OUTPUT CHANGED: {old_value} -> {output_logic}")
+        
+        if output_logic:
+            print(f"  Propagating power from ({out_x}, {out_y})")
+            propagate_from(out_x, out_y)
+        else:
+            print(f"  Removing power from ({out_x}, {out_y})")
+            propagate_no_power(out_x, out_y)
+        return True  # Signal that something changed
+    else:
+        print(f"  No change in output (remains {output_logic})")
+        return False
+
+def propagate_power():
+    """Main power propagation function - modularized for better performance and readability"""
+    # Step 1: Collect all gates in a single pass
+    gates_by_id = collect_gates_by_id()
+    
+    # Step 2: Store previous gate outputs before reset
+    store_previous_gate_outputs(gates_by_id)
+    
+    # Step 3: Reset all power states (except clocks)
+    reset_power_states()
+    
+    # Step 4: Process power sources and clocks
+    process_power_sources_and_clocks()
+    
+    # Step 5: Iteratively evaluate gates until stable
     changed = True
     iterations = 0
     max_iterations = 20
+    gate_origins = get_sorted_gate_origins(gates_by_id)
 
     while changed and iterations < max_iterations:
         changed = False
         iterations += 1
-
-        # Reset evaluation flags for all gates at start of each cycle
-        for gate_id, gate_cells in gates_by_id.items():
-            for x, y, cell in gate_cells:
-                cell["evaluated_this_cycle"] = False
-
-        # Sort all gate origins by x-coordinate (left to right)
-        gate_origins = []
-        for gate_id, gate_cells in gates_by_id.items():
-            for x, y, cell in gate_cells:
-                if cell["local_pos"] == (0, 0):  # Only gate origins
-                    gate_origins.append((x, y, cell))
         
-        # Sort by x-coordinate first, then y-coordinate
-        gate_origins.sort(key=lambda gate: (gate[0], gate[1]))
+        # Reset evaluation flags for all gates
+        reset_gate_evaluation_flags(gates_by_id)
         
+        # Evaluate all gates in deterministic order
         for x, y, cell in gate_origins:
             gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
-            
-            print(f"\nProcessing gate at ({x}, {y}) - {cell['gate_type']}")
-            
-            # Previous output was already stored before grid reset
-            out_dx, out_dy = gate_def["output"]
-            out_x, out_y = x + out_dx, y + out_dy
-            if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
-                output_cell = grid[out_y][out_x]
-                print(f"  Previous output was: {output_cell.get('previous_output', False)}")
-            
-            out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
-
-            if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
-                print(f"  Output position ({out_x}, {out_y}) out of bounds!")
-                continue
-
-            out_cell = grid[out_y][out_x]
-            
-            # Mark this gate as evaluated
-            out_cell["evaluated_this_cycle"] = True
-            print(f"  Marked gate as evaluated this cycle")
-            
-            # Only set changed = True if the output actually changed
-            if out_cell["powered"] != output_logic:
-                old_value = out_cell["powered"]
-                out_cell["powered"] = output_logic
-                print(f"  OUTPUT CHANGED: {old_value} -> {output_logic}")
-                if output_logic:
-                    print(f"  Propagating power from ({out_x}, {out_y})")
-                    propagate_from(out_x, out_y)
-                else:
-                    print(f"  Removing power from ({out_x}, {out_y})")
-                    propagate_no_power(out_x, out_y)
-                changed = True
-            else:
-                print(f"  No change in output (remains {output_logic})")
+            if gate_def:
+                gate_changed = evaluate_single_gate(x, y, cell, gate_def)
+                if gate_changed:
+                    changed = True
 
 
 def propagate_no_power(x, y, direction=None):
@@ -1259,20 +1293,45 @@ def draw_grid():
     camera_x = lerp(camera_x, target_camera_x, move_speed)
     camera_y = lerp(camera_y, target_camera_y, move_speed)
 
+    # Pre-calculate commonly used values
+    grid_size_zoomed = round(GRID_SIZE * zoom)
     grid_alpha = max(50, min(200, int(255 * (zoom / target_zoom))))
     grid_color_fade = (100, 100, 100, grid_alpha)
 
-    for x in range(grid_width):
-        for y in range(grid_height):
+    # Optimized culling - only process visible grid cells
+    start_x = max(0, int((camera_x) // GRID_SIZE) - 1)
+    end_x = min(grid_width, int((camera_x + WIDTH / zoom) // GRID_SIZE) + 2)
+    start_y = max(0, int((camera_y) // GRID_SIZE) - 1)
+    end_y = min(grid_height, int((camera_y + HEIGHT / zoom) // GRID_SIZE) + 2)
+    
+    # Skip rendering if zoomed out too far (cells would be too small to see)
+    if grid_size_zoomed < 2:
+        # Only draw a simplified view when zoomed out very far
+        for x in range(start_x, end_x, max(1, int(5 / zoom))):
+            for y in range(start_y, end_y, max(1, int(5 / zoom))):
+                if grid[y][x]["type"] != "empty":
+                    grid_x = round((x * GRID_SIZE - camera_x) * zoom)
+                    grid_y = round((y * GRID_SIZE - camera_y) * zoom)
+                    if -grid_size_zoomed < grid_x < WIDTH and -grid_size_zoomed < grid_y < HEIGHT:
+                        pygame.draw.rect(screen, (100, 100, 100), (grid_x, grid_y, max(1, grid_size_zoomed), max(1, grid_size_zoomed)))
+        return None  # Skip the rest of the rendering when zoomed out
+    
+    for x in range(start_x, end_x):
+        for y in range(start_y, end_y):
             grid_x = round((x * GRID_SIZE - camera_x) * zoom)
             grid_y = round((y * GRID_SIZE - camera_y) * zoom)
-            size = round(GRID_SIZE * zoom)
 
-            if -size < grid_x < WIDTH and -size < grid_y < HEIGHT:
-                rect = pygame.Rect(grid_x, grid_y, size, size)
+            # Additional bounds check for safety
+            if -grid_size_zoomed < grid_x < WIDTH and -grid_size_zoomed < grid_y < HEIGHT:
+                rect = pygame.Rect(grid_x, grid_y, grid_size_zoomed, grid_size_zoomed)
                 pygame.draw.rect(screen, grid_color_fade, rect, 1)
 
                 cell = grid[y][x]
+                
+                # Skip empty cells to save rendering time
+                if cell["type"] == "empty":
+                    continue
+                    
                 alpha = max(50, min(255, int(255 * (zoom / target_zoom))))
 
                 if cell["type"] == "redstone":
@@ -1385,9 +1444,16 @@ def draw_grid():
         grid_y1 = round((y1 * GRID_SIZE - camera_y) * zoom)
         grid_x2 = round((x2 * GRID_SIZE - camera_x) * zoom)
         grid_y2 = round((y2 * GRID_SIZE - camera_y) * zoom)
-        rect = pygame.Rect(min(grid_x1, grid_x2), min(grid_y1, grid_y2),
-                           abs(grid_x2 - grid_x1) + GRID_SIZE, abs(grid_y2 - grid_y1) + GRID_SIZE)
-        pygame.draw.rect(screen, (100, 200, 255), rect, 2)
+        
+        # Only draw lasso if it's visible on screen
+        min_x = min(grid_x1, grid_x2)
+        max_x = max(grid_x1, grid_x2) + GRID_SIZE
+        min_y = min(grid_y1, grid_y2)
+        max_y = max(grid_y1, grid_y2) + GRID_SIZE
+        
+        if max_x >= 0 and min_x <= WIDTH and max_y >= 0 and min_y <= HEIGHT:
+            rect = pygame.Rect(min_x, min_y, abs(grid_x2 - grid_x1) + GRID_SIZE, abs(grid_y2 - grid_y1) + GRID_SIZE)
+            pygame.draw.rect(screen, (100, 200, 255), rect, 2)
     
 
 
@@ -1395,46 +1461,58 @@ def draw_grid():
         mouse_x, mouse_y = pygame.mouse.get_pos()
         grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
         grid_y = int((mouse_y / zoom + camera_y) // GRID_SIZE)
+        
+        # Only show preview if mouse position is within visible grid bounds
         if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
-            if placement_mode in ["redstone", "power"]:
-                rect = pygame.Rect(
-                    round((grid_x * GRID_SIZE - camera_x) * zoom),
-                    round((grid_y * GRID_SIZE - camera_y) * zoom),
-                    round(GRID_SIZE * zoom),
-                    round(GRID_SIZE * zoom)
-                )
-                pygame.draw.rect(screen, (255, 248, 189), rect, 3) 
-            else:
+            preview_screen_x = round((grid_x * GRID_SIZE - camera_x) * zoom)
+            preview_screen_y = round((grid_y * GRID_SIZE - camera_y) * zoom)
+            
+            # Only render preview if it's visible on screen
+            if -GRID_SIZE < preview_screen_x < WIDTH and -GRID_SIZE < preview_screen_y < HEIGHT:
+                if placement_mode in ["redstone", "power"]:
+                    rect = pygame.Rect(
+                        preview_screen_x,
+                        preview_screen_y,
+                        round(GRID_SIZE * zoom),
+                        round(GRID_SIZE * zoom)
+                    )
+                    pygame.draw.rect(screen, (255, 248, 189), rect, 3) 
+                else:
+                    typeOfGate = f"{rotation}-{placement_mode}"
+                    gate_def = GATE_DEFINITIONS.get(typeOfGate)
+                    if gate_def:
+                        w, h = gate_def["size"]
+                        input_offsets = gate_def["inputs"]
+                        output_offset = gate_def["output"]
 
-                typeOfGate = f"{rotation}-{placement_mode}"
-                gate_def = GATE_DEFINITIONS.get(typeOfGate)
-                if gate_def:
-                    w, h = gate_def["size"]
-                    input_offsets = gate_def["inputs"]
-                    output_offset = gate_def["output"]
+                        for dx, dy in input_offsets:
+                            gx = grid_x + dx
+                            gy = grid_y + dy
+                            if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                                input_screen_x = round((gx * GRID_SIZE - camera_x) * zoom)
+                                input_screen_y = round((gy * GRID_SIZE - camera_y) * zoom)
+                                if -GRID_SIZE < input_screen_x < WIDTH and -GRID_SIZE < input_screen_y < HEIGHT:
+                                    rect = pygame.Rect(
+                                        input_screen_x,
+                                        input_screen_y,
+                                        round(GRID_SIZE * zoom),
+                                        round(GRID_SIZE * zoom)
+                                    )
+                                    pygame.draw.rect(screen, (0, 255, 0), rect, 3) 
 
-                    for dx, dy in input_offsets:
-                        gx = grid_x + dx
-                        gy = grid_y + dy
-                        if 0 <= gx < grid_width and 0 <= gy < grid_height:
-                            rect = pygame.Rect(
-                                round((gx * GRID_SIZE - camera_x) * zoom),
-                                round((gy * GRID_SIZE - camera_y) * zoom),
-                                round(GRID_SIZE * zoom),
-                                round(GRID_SIZE * zoom)
-                            )
-                            pygame.draw.rect(screen, (0, 255, 0), rect, 3) 
-
-                    out_gx = grid_x + output_offset[0]
-                    out_gy = grid_y + output_offset[1]
-                    if 0 <= out_gx < grid_width and 0 <= out_gy < grid_height:
-                        rect = pygame.Rect(
-                            round((out_gx * GRID_SIZE - camera_x) * zoom),
-                            round((out_gy * GRID_SIZE - camera_y) * zoom),
-                            round(GRID_SIZE * zoom),
-                            round(GRID_SIZE * zoom)
-                        )
-                        pygame.draw.rect(screen, (255, 200, 0), rect, 3)  
+                        out_gx = grid_x + output_offset[0]
+                        out_gy = grid_y + output_offset[1]
+                        if 0 <= out_gx < grid_width and 0 <= out_gy < grid_height:
+                            output_screen_x = round((out_gx * GRID_SIZE - camera_x) * zoom)
+                            output_screen_y = round((out_gy * GRID_SIZE - camera_y) * zoom)
+                            if -GRID_SIZE < output_screen_x < WIDTH and -GRID_SIZE < output_screen_y < HEIGHT:
+                                rect = pygame.Rect(
+                                    output_screen_x,
+                                    output_screen_y,
+                                    round(GRID_SIZE * zoom),
+                                    round(GRID_SIZE * zoom)
+                                )
+                                pygame.draw.rect(screen, (255, 200, 0), rect, 3)  
 
 
     popup_button_defs = []
@@ -1533,11 +1611,15 @@ def draw_grid():
                 ("paste_component", None, None, None),
             ]}
 
+    # Only draw selected cell highlights for visible cells
     for (x, y) in selected_cells:
         grid_x = round((x * GRID_SIZE - camera_x) * zoom)
         grid_y = round((y * GRID_SIZE - camera_y) * zoom)
         size = round(GRID_SIZE * zoom)
-        pygame.draw.rect(screen, (255, 255, 0), (grid_x, grid_y, size, size), 3)
+        
+        # Only draw if the cell is visible on screen
+        if -size < grid_x < WIDTH and -size < grid_y < HEIGHT:
+            pygame.draw.rect(screen, (255, 255, 0), (grid_x, grid_y, size, size), 3)
 
     draw_hamburger_icon()
     draw_cell_inspector()
@@ -1984,8 +2066,8 @@ while running:
             if state == MENU:
                 if  250 <= my <= 300:
 
-                    grid_width = 250
-                    grid_height = 250
+                    grid_width = 500
+                    grid_height = 500
                     grid = [[{"type": "empty", "powered": False} for _ in range(grid_width)] for _ in range(grid_height)]
                     selected_cells.clear()
                     lasso_start = None
