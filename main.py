@@ -1,24 +1,65 @@
+import os
 import pygame
 import math  
 import json
-import os
+
+# Try to enable hardware acceleration with improved settings
+os.environ['SDL_VIDEODRIVER'] = 'windows'  # Use native Windows driver for better performance
+os.environ['SDL_RENDER_DRIVER'] = 'direct3d'  # Use Direct3D on Windows
+os.environ['SDL_RENDER_SCALE_QUALITY'] = '1'  # Enable linear filtering
+os.environ['SDL_VIDEO_ACCELERATED'] = '1'  # Force hardware acceleration
+
 #fixed d - latch logic
 COMPONENTS_FILE = "components.json"
 VIEW_COMPONENTS = "view_components"
 NAMING_COMPONENT = "naming_component"
+PASTE_COMPONENT = "paste_component"
 component_name_input = ""
 editing_component_index = None
 
+# Context menu variables
+context_menu_visible = False
+context_menu_pos = (0, 0)
+paste_component_rect = None
+
 def save_component(selected_cells, grid, name=None):
     global grid_width, grid_height
-    width, height = grid_width, grid_height
-    component_grid = []
-    for y in range(height):
-        row = []
-        for x in range(width):
+    
+    # Find bounding box of all non-empty cells
+    min_x, max_x = grid_width, -1
+    min_y, max_y = grid_height, -1
+    
+    for y in range(grid_height):
+        for x in range(grid_width):
             cell = grid[y][x]
-            row.append(cell)
-        component_grid.append(row)
+            if cell["type"] != "empty":
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
+    
+    # If no non-empty cells found, save a 1x1 empty component
+    if max_x == -1:
+        width, height = 1, 1
+        component_grid = [[{"type": "empty", "powered": False}]]
+        print("No non-empty cells found, saving empty component")
+    else:
+        # Calculate dimensions of bounding box
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+        
+        # Extract only the cells within the bounding box
+        component_grid = []
+        for y in range(min_y, max_y + 1):
+            row = []
+            for x in range(min_x, max_x + 1):
+                cell = grid[y][x].copy()
+                row.append(cell)
+            component_grid.append(row)
+        
+        print(f"Saving component with bounding box: ({min_x}, {min_y}) to ({max_x}, {max_y})")
+        print(f"Component dimensions: {width}x{height}")
+    
     if not name:
         name = "Component"
     component = {"name": name, "width": width, "height": height, "grid": component_grid}
@@ -41,7 +82,9 @@ GRID_SIZE = 20
 GRID_COLOR = (100, 100, 100, 150)
 REDSTONE_BASE = (255, 50, 50)
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+# Enable hardware acceleration and create screen with optimal flags
+pygame.display.set_mode((WIDTH, HEIGHT), pygame.HWSURFACE | pygame.DOUBLEBUF)
+screen = pygame.display.get_surface()
 clock = pygame.time.Clock()
 font = pygame.font.Font(None, 36) 
 
@@ -60,19 +103,38 @@ zoom_speed = 0.1
 
 panning = False
 last_mouse_x, last_mouse_y = 0, 0
+dragging_placement = False  # Track if we're dragging to place items
 
 
-grid_width = 100  
-grid_height = 100
+grid_width = 500
+grid_height = 500
 
 grid = [[{"type": "empty", "powered": False, "frequency": None, "timer": 0} for _ in range(grid_width)] for _ in range(grid_height)]
 placement_mode = "redstone" 
 lasso_start = None
 lasso_end = None
 selected_cells = set()
-item_menu_anim = 0.0  
+item_menu_anim = 0.0
+
+# Context menu variables
+context_menu_visible = False
+context_menu_pos = (0, 0)
+paste_component_rect = None
+placement_error_timer = 0
+no_components_error = 0
+paste_mode = False
+paste_target_pos = (0, 0)
+components_list = []
+selected_component_index = 0
+selected_paste_component = None
+
+# Zoom bar variables
+zoom_bar_anim = 0.0
+zoom_bar_height = 60
+zoom_slider_dragging = False
 
 
+zoom_slider_dragging = False
 
 menu_button_rect = pygame.Rect(10, 10, 40, 40) 
 side_menu_rect = pygame.Rect(0, 0, 200, HEIGHT)  
@@ -510,6 +572,241 @@ def clear_lasso_selection():
     selected_cells.clear()
     lasso_start = None
     lasso_end = None
+
+def draw_context_menu():
+    """Draw the right-click context menu"""
+    global paste_component_rect
+    
+    if not context_menu_visible:
+        return
+    
+    menu_x, menu_y = context_menu_pos
+    menu_width, menu_height = 150, 40
+    
+    # Adjust position if menu would go off screen
+    if menu_x + menu_width > WIDTH:
+        menu_x = WIDTH - menu_width
+    if menu_y + menu_height > HEIGHT:
+        menu_y = HEIGHT - menu_height
+    
+    # Draw menu background
+    menu_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
+    pygame.draw.rect(screen, (60, 60, 60), menu_rect, border_radius=5)
+    pygame.draw.rect(screen, (100, 100, 100), menu_rect, 2, border_radius=5)
+    
+    # Draw "Paste Component" option
+    paste_component_rect = pygame.Rect(menu_x + 5, menu_y + 5, menu_width - 10, 30)
+    
+    mouse_pos = pygame.mouse.get_pos()
+    is_hover = paste_component_rect.collidepoint(mouse_pos)
+    
+    if is_hover:
+        pygame.draw.rect(screen, (80, 80, 80), paste_component_rect, border_radius=3)
+    
+    # Draw text
+    font_small = pygame.font.Font(None, 24)
+    text = font_small.render("Paste Component", True, (255, 255, 255))
+    text_rect = text.get_rect(center=paste_component_rect.center)
+    screen.blit(text, text_rect)
+
+
+def draw_no_component_error():
+    """Draw error message when component can't be placed"""
+    global no_components_error
+
+    if no_components_error <= 0:
+        return
+    
+    error_text = "You need to create a component first!"
+    error_font = pygame.font.Font(None, 32)
+    error_surf = error_font.render(error_text, True, (255, 100, 100))
+    
+    # Draw error with background
+    error_rect = error_surf.get_rect(center=(WIDTH//2, HEIGHT//2))
+    bg_rect = error_rect.inflate(20, 10)
+    
+    # Fade effect
+    alpha = min(255, no_components_error * 8)
+    fade_surface = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+    fade_surface.fill((50, 20, 20, alpha))
+    
+    screen.blit(fade_surface, bg_rect)
+    pygame.draw.rect(screen, (200, 100, 100, alpha), bg_rect, 2, border_radius=8)
+    
+    error_surf.set_alpha(alpha)
+    screen.blit(error_surf, error_rect)
+
+    no_components_error -= 1
+
+
+def draw_component_placement_error():
+    """Draw error message when component can't be placed"""
+    global placement_error_timer
+
+    
+    if placement_error_timer <= 0:
+        return
+    
+    error_text = "Cannot place component here!"
+    error_font = pygame.font.Font(None, 32)
+    error_surf = error_font.render(error_text, True, (255, 100, 100))
+    
+    # Draw error with background
+    error_rect = error_surf.get_rect(center=(WIDTH//2, HEIGHT//2))
+    bg_rect = error_rect.inflate(20, 10)
+    
+    # Fade effect
+    alpha = min(255, placement_error_timer * 8)
+    fade_surface = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+    fade_surface.fill((50, 20, 20, alpha))
+    
+    screen.blit(fade_surface, bg_rect)
+    pygame.draw.rect(screen, (200, 100, 100, alpha), bg_rect, 2, border_radius=8)
+    
+    error_surf.set_alpha(alpha)
+    screen.blit(error_surf, error_rect)
+    
+    placement_error_timer -= 1
+
+def draw_zoom_bar():
+    """Draw the bottom zoom bar that appears when mouse is near bottom"""
+    global zoom_bar_anim
+    
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+    show_zoom_bar = mouse_y > HEIGHT - 100  # Show when mouse is near bottom
+    
+    target_anim = 1.0 if show_zoom_bar else 0.0
+    zoom_bar_anim += (target_anim - zoom_bar_anim) * 0.3
+    
+    if zoom_bar_anim < 0.01:
+        return  # Don't draw if barely visible
+    
+    # Calculate bar position with animation
+    bar_y = HEIGHT - int(zoom_bar_height * zoom_bar_anim)
+    bar_rect = pygame.Rect(0, bar_y, WIDTH, zoom_bar_height)
+    
+    # Draw background
+    pygame.draw.rect(screen, (40, 40, 40), bar_rect)
+    pygame.draw.rect(screen, (80, 80, 80), (0, bar_y, WIDTH, 2))  # Top border
+    
+    # Zoom controls
+    zoom_label_font = pygame.font.Font(None, 24)
+    zoom_label = zoom_label_font.render("Zoom:", True, (255, 255, 255))
+    screen.blit(zoom_label, (20, bar_y + 20))
+    
+    # Zoom percentage display
+    zoom_percent = int(zoom * 100)
+    zoom_text = zoom_label_font.render(f"{zoom_percent}%", True, (255, 255, 255))
+    screen.blit(zoom_text, (80, bar_y + 20))
+    
+    # Zoom slider
+    slider_x = 180
+    slider_y = bar_y + 25
+    slider_width = 200
+    slider_height = 10
+    
+    # Slider track
+    slider_track = pygame.Rect(slider_x, slider_y, slider_width, slider_height)
+    pygame.draw.rect(screen, (60, 60, 60), slider_track, border_radius=5)
+    
+    # Zoom range: 0.2 to 3.0
+    min_zoom, max_zoom = 0.2, 3.0
+    zoom_ratio = (zoom - min_zoom) / (max_zoom - min_zoom)
+    zoom_ratio = max(0, min(1, zoom_ratio))  # Clamp to 0-1
+    
+    # Slider handle
+    handle_x = slider_x + int(zoom_ratio * slider_width) - 5
+    handle_rect = pygame.Rect(handle_x, slider_y - 5, 10, slider_height + 10)
+    pygame.draw.rect(screen, (120, 120, 255), handle_rect, border_radius=3)
+    
+    # Zoom buttons
+    zoom_out_button = pygame.Rect(400, bar_y + 15, 30, 30)
+    zoom_in_button = pygame.Rect(440, bar_y + 15, 30, 30)
+    
+    # Check for hover
+    mouse_pos = pygame.mouse.get_pos()
+    zoom_out_hover = zoom_out_button.collidepoint(mouse_pos)
+    zoom_in_hover = zoom_in_button.collidepoint(mouse_pos)
+    
+    # Draw zoom out button
+    zoom_out_color = (80, 80, 200) if zoom_out_hover else (60, 60, 60)
+    pygame.draw.rect(screen, zoom_out_color, zoom_out_button, border_radius=5)
+    minus_font = pygame.font.Font(None, 24)
+    minus_text = minus_font.render("-", True, (255, 255, 255))
+    minus_rect = minus_text.get_rect(center=zoom_out_button.center)
+    screen.blit(minus_text, minus_rect)
+    
+    # Draw zoom in button
+    zoom_in_color = (80, 80, 200) if zoom_in_hover else (60, 60, 60)
+    pygame.draw.rect(screen, zoom_in_color, zoom_in_button, border_radius=5)
+    plus_text = minus_font.render("+", True, (255, 255, 255))
+    plus_rect = plus_text.get_rect(center=zoom_in_button.center)
+    screen.blit(plus_text, plus_rect)
+    
+    # Reset zoom button
+    reset_button = pygame.Rect(480, bar_y + 15, 60, 30)
+    reset_hover = reset_button.collidepoint(mouse_pos)
+    reset_color = (80, 80, 200) if reset_hover else (60, 60, 60)
+    pygame.draw.rect(screen, reset_color, reset_button, border_radius=5)
+    reset_text = zoom_label_font.render("Reset", True, (255, 255, 255))
+    reset_rect = reset_text.get_rect(center=reset_button.center)
+    screen.blit(reset_text, reset_rect)
+    
+    return {
+        'zoom_out_button': zoom_out_button,
+        'zoom_in_button': zoom_in_button,
+        'reset_button': reset_button,
+        'slider_track': slider_track,
+        'visible': zoom_bar_anim > 0.01
+    }
+
+def can_place_component(component, x, y):
+    """Check if a component can be placed at the given position"""
+    comp_w, comp_h = component["width"], component["height"]
+    
+    # Check if component fits within grid bounds
+    if x + comp_w > grid_width or y + comp_h > grid_height:
+        return False
+    
+    # Check if all cells are empty
+    for dy in range(comp_h):
+        for dx in range(comp_w):
+            gx, gy = x + dx, y + dy
+            if grid[gy][gx]["type"] != "empty":
+                return False
+    
+    return True
+
+def place_component(component, x, y):
+    """Place a component at the given position"""
+    global gate_counter
+    comp_w, comp_h = component["width"], component["height"]
+    comp_grid = component["grid"]
+    
+    # Track gate IDs that need to be reassigned
+    old_to_new_gate_id = {}
+    
+    for dy in range(comp_h):
+        for dx in range(comp_w):
+            gx, gy = x + dx, y + dy
+            cell = comp_grid[dy][dx].copy()
+            
+            # Fix local_pos if it's a list (should be tuple)
+            if cell.get("type") == "gate" and "local_pos" in cell:
+                if isinstance(cell["local_pos"], list):
+                    cell["local_pos"] = tuple(cell["local_pos"])
+                
+                # Reassign gate ID
+                old_gate_id = cell.get("gate_id")
+                if old_gate_id is not None:
+                    if old_gate_id not in old_to_new_gate_id:
+                        old_to_new_gate_id[old_gate_id] = gate_counter
+                        gate_counter += 1
+                    cell["gate_id"] = old_to_new_gate_id[old_gate_id]
+            
+            grid[gy][gx] = cell
+    
+    print(f"Component '{component['name']}' placed at ({x}, {y})")
 
 def propagate_power():
     # Store previous outputs BEFORE resetting power states
@@ -954,7 +1251,7 @@ def propagate_from(x, y, direction=None):
 needs_propagation = True
                     
 def draw_grid():
-    global copy_button_rect, delete_button_rect_popup, paste_button_rect
+    global copy_button_rect, delete_button_rect_popup, paste_button_rect, paste_component_popup_rect
 
     screen.fill((30, 30, 30))
     global zoom, camera_x, camera_y
@@ -1147,13 +1444,14 @@ def draw_grid():
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
         popup_x = round((max_x * GRID_SIZE - camera_x) * zoom) + 10
-        popup_y = round((min_y * GRID_SIZE - camera_y) * zoom) - 40
-        button_w, button_h = 60, 30
+        popup_y = round((min_y * GRID_SIZE - camera_y) * zoom) - 160  # Move up to fit all buttons
+        button_w, button_h = 80, 30  # Make buttons wider and rectangular
 
         popup_button_defs = [
             ("copy", pygame.Rect(popup_x, popup_y, button_w, button_h), "Copy", (100, 200, 100)),
-            ("delete", pygame.Rect(popup_x + button_w + 10, popup_y, button_w, button_h), "Delete", (200, 80, 80)),
-            ("paste", pygame.Rect(popup_x + 2 * (button_w + 10), popup_y, button_w, button_h), "Paste", (80, 180, 255) if clipboard else (120, 120, 120)),
+            ("delete", pygame.Rect(popup_x, popup_y + button_h + 5, button_w, button_h), "Delete", (200, 80, 80)),
+            ("paste", pygame.Rect(popup_x, popup_y + 2 * (button_h + 5), button_w, button_h), "Paste", (80, 180, 255) if clipboard else (120, 120, 120)),
+            ("paste_component", pygame.Rect(popup_x, popup_y + 3 * (button_h + 5), button_w, button_h), "Component", (255, 180, 80)),
         ]
 
         # Track scale for popup buttons
@@ -1176,32 +1474,54 @@ def draw_grid():
             draw_rect = pygame.Rect(0, 0, scaled_w, scaled_h)
             draw_rect.center = center
 
-            pastel = tuple(min(255, int(c * 0.6 + 255 * 0.4)) for c in base_color)
-            draw_color = pastel if is_hover else (0, 0, 0)
+            # Use golden yellow glow color when hovering (like cell highlight)
+            golden_glow_color = (255, 248, 189)  # Same as cell highlight color
+            draw_color = golden_glow_color if is_hover else (50, 50, 50)
 
             if is_hover:
-                glow_surface = pygame.Surface((draw_rect.width, draw_rect.height), pygame.SRCALPHA)
-                glow_center = (draw_rect.width // 2, draw_rect.height // 2)
-                max_radius = int(min(draw_rect.width, draw_rect.height) * 0.95)
-                for i in range(10, 0, -1):
-                    alpha = int(80 * (i / 10))
-                    radius = int(max_radius * (i / 10))
-                    pygame.draw.circle(
-                        glow_surface,
-                        (*base_color, alpha),
-                        glow_center,
-                        radius
-                    )
-                screen.blit(glow_surface, draw_rect.topleft)
+                # Create golden yellow glow effect
+                glow_surface = pygame.Surface((draw_rect.width + 20, draw_rect.height + 20), pygame.SRCALPHA)
+                glow_center = (glow_surface.get_width() // 2, glow_surface.get_height() // 2)
+                
+                # Create multiple layers of golden glow
+                for i in range(8, 0, -1):
+                    alpha = int(40 * (i / 8))  # Softer glow
+                    radius = int((min(draw_rect.width, draw_rect.height) // 2 + 10) * (i / 8))
+                    glow_color_with_alpha = (*golden_glow_color, alpha)
+                    
+                    # Draw circular glow
+                    for r in range(radius, 0, -2):
+                        current_alpha = max(1, alpha * (r / radius))
+                        pygame.draw.circle(
+                            glow_surface,
+                            (*golden_glow_color, int(current_alpha)),
+                            glow_center,
+                            r
+                        )
+                
+                # Position glow surface centered on button
+                glow_pos = (draw_rect.x - 10, draw_rect.y - 10)
+                screen.blit(glow_surface, glow_pos)
 
+            # Draw button with golden border when hovered
+            if is_hover:
+                # Draw golden border
+                border_rect = pygame.Rect(draw_rect.x - 2, draw_rect.y - 2, 
+                                        draw_rect.width + 4, draw_rect.height + 4)
+                pygame.draw.rect(screen, golden_glow_color, border_rect, 3, border_radius=10)
+            
             pygame.draw.rect(screen, draw_color, draw_rect, border_radius=8)
-            font_size = 22 if len(label) > 5 else 26
+            
+            # Draw button text
+            font_size = 22 if len(label) > 8 else 24
             btn_font = pygame.font.Font(None, font_size)
-            text_surf = btn_font.render(label, True, (255, 255, 255))
+            text_color = (30, 30, 30) if is_hover else (255, 255, 255)  # Dark text on golden background
+            text_surf = btn_font.render(label, True, text_color)
             text_rect = text_surf.get_rect(center=draw_rect.center)
             screen.blit(text_surf, text_rect)
 
         copy_button_rect = popup_button_defs[0][1]
+        paste_component_popup_rect = popup_button_defs[3][1]
         delete_button_rect_popup = popup_button_defs[1][1]
         paste_button_rect = popup_button_defs[2][1]
     else:
@@ -1210,6 +1530,7 @@ def draw_grid():
                 ("copy", None, None, None),
                 ("delete", None, None, None),
                 ("paste", None, None, None),
+                ("paste_component", None, None, None),
             ]}
 
     for (x, y) in selected_cells:
@@ -1220,6 +1541,12 @@ def draw_grid():
 
     draw_hamburger_icon()
     draw_cell_inspector()
+    draw_context_menu()
+    draw_component_placement_error()
+    draw_no_component_error()
+    
+    # Draw zoom bar and get button rects
+    zoom_bar_info = draw_zoom_bar()
 
     menu_width = 120
     slide_offset = int(menu_width * (1 - item_menu_anim))
@@ -1407,8 +1734,11 @@ def draw_grid():
         save_text = save_font.render("Save Component", True, (255, 255, 255))
         save_text_rect = save_text.get_rect(center=save_draw_rect.center)
         screen.blit(save_text, save_text_rect)
+    
+    # Return zoom bar info for mouse handling
+    return zoom_bar_info
 
-def draw_components_list(components, selected_index):
+def draw_components_list(components, selected_index, paste_mode=False):
     global component_delete_rects
     screen.fill((30, 30, 30))
     y = 100
@@ -1417,21 +1747,44 @@ def draw_components_list(components, selected_index):
     back_rect = pygame.Rect(20, 20, 80, 40)
     pygame.draw.rect(screen, (80, 80, 80), back_rect, border_radius=8)
     screen.blit(back_text, back_rect.move(10, 5))
+    
+    # Show different title based on mode
+    if paste_mode:
+        title_text = "Select Component to Paste"
+        title_color = (100, 255, 100)
+    else:
+        title_text = "Components"
+        title_color = (255, 255, 255)
+    
+    title_font = pygame.font.Font(None, 36)
+    title_surf = title_font.render(title_text, True, title_color)
+    screen.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, 50))
+    
     component_delete_rects = []
     for i, comp in enumerate(components):
         color = (255, 255, 0) if i == selected_index else (200, 200, 200)
         surf = font.render(comp["name"], True, color)
         screen.blit(surf, (100, y))
-        del_rect = pygame.Rect(350, y, 80, 32)
-        pygame.draw.rect(screen, (200, 80, 80), del_rect, border_radius=8)
-        del_font = pygame.font.Font(None, 28)
-        del_text = del_font.render("Delete", True, (255, 255, 255))
-        del_text_rect = del_text.get_rect(center=del_rect.center)
-        screen.blit(del_text, del_text_rect)
-        component_delete_rects.append(del_rect)
+        
+        # Only show delete buttons if not in paste mode
+        if not paste_mode:
+            del_rect = pygame.Rect(350, y, 80, 32)
+            pygame.draw.rect(screen, (200, 80, 80), del_rect, border_radius=8)
+            del_font = pygame.font.Font(None, 28)
+            del_text = del_font.render("Delete", True, (255, 255, 255))
+            del_text_rect = del_text.get_rect(center=del_rect.center)
+            screen.blit(del_text, del_text_rect)
+            component_delete_rects.append(del_rect)
+        else:
+            component_delete_rects.append(None)
+        
         y += 40
+    
     if components:
-        preview = font.render("Click to edit", True, (180, 180, 255))
+        if paste_mode:
+            preview = font.render("Click to paste", True, (100, 255, 100))
+        else:
+            preview = font.render("Click to edit", True, (180, 180, 255))
         screen.blit(preview, (400, 80))
 
 def load_component_to_grid(component, index=None):
@@ -1476,9 +1829,10 @@ def load_component_to_grid(component, index=None):
             new_gate_id = gate_counter
             for dy in range(h):
                 for dx in range(w):
-                    gx, gy = origin_x + dx, origin_y + dy
+                    gx = origin_x + dx
+                    gy = origin_y + dy
                     if 0 <= gx < grid_width and 0 <= gy < grid_height:
-                        if grid[gy][gx].get("type") == "gate":
+                        if grid[gy][gx].get("type") == "gate" and grid[gy][gx].get("gate_type") == gate_type:
                             grid[gy][gx]["gate_id"] = new_gate_id
             
             gate_counter += 1
@@ -1504,17 +1858,21 @@ def draw_naming_prompt(input_text):
     screen.blit(save_text, save_rect.move(20, 5))
     return save_rect
 
-
+has_propagated = False
+zoom_bar_info = None  # Store zoom bar info for mouse handling
 running = True
 while running:
     if state == MENU:
         draw_menu()
     elif state == VIEW_COMPONENTS:
-        draw_components_list(components_list, selected_component_index)
+        draw_components_list(components_list, selected_component_index, paste_mode)
+    elif state == PASTE_COMPONENT:
+        draw_components_list(components_list, selected_component_index, True)
     elif state == NAMING_COMPONENT:
         save_rect = draw_naming_prompt(component_name_input)
     else:
-        draw_grid()
+        zoom_bar_info = draw_grid()  # Capture zoom bar info
+
     mouse_x, _ = pygame.mouse.get_pos()
     show_menu = mouse_x > WIDTH - 180
     target_anim = 1.0 if show_menu else 0.0
@@ -1535,6 +1893,10 @@ while running:
                 else:
                     if len(component_name_input) < 20 and event.unicode.isprintable():
                         component_name_input += event.unicode
+            elif state == PASTE_COMPONENT:
+                if event.key == pygame.K_ESCAPE:
+                    state = BUILD_MODE
+                    paste_mode = False
             elif placement_mode == "clock":
                 if event.key == pygame.K_UP:
                     grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1) 
@@ -1546,6 +1908,29 @@ while running:
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mx, my = event.pos
+
+            # Handle zoom bar interactions first (if visible and in BUILD_MODE)
+            if state == BUILD_MODE and zoom_bar_info and zoom_bar_info.get('visible', False):
+                if zoom_bar_info['zoom_out_button'].collidepoint(mx, my):
+                    target_zoom /= 1.2
+                    target_zoom = max(0.2, target_zoom)  # Minimum zoom
+                    continue
+                elif zoom_bar_info['zoom_in_button'].collidepoint(mx, my):
+                    target_zoom *= 1.2
+                    target_zoom = min(3.0, target_zoom)  # Maximum zoom
+                    continue
+                elif zoom_bar_info['reset_button'].collidepoint(mx, my):
+                    target_zoom = 1.0
+                    continue
+                elif zoom_bar_info['slider_track'].collidepoint(mx, my):
+                    # Handle slider click and start dragging
+                    zoom_slider_dragging = True
+                    slider_rect = zoom_bar_info['slider_track']
+                    click_ratio = (mx - slider_rect.x) / slider_rect.width
+                    click_ratio = max(0, min(1, click_ratio))  # Clamp to 0-1
+                    min_zoom, max_zoom = 0.2, 3.0
+                    target_zoom = min_zoom + click_ratio * (max_zoom - min_zoom)
+                    continue
 
             if state == NAMING_COMPONENT:
                 save_rect = draw_naming_prompt(component_name_input)
@@ -1581,11 +1966,26 @@ while running:
                             grid[gy][gx] = cell.copy()
                     print("Pasted selection!")
                     continue
+                elif paste_component_popup_rect and paste_component_popup_rect.collidepoint(mx, my):
+                    # Load components and switch to paste mode
+                    components_list = load_components()
+                    if components_list:  # Only show if there are components to paste
+                        selected_component_index = 0
+                        paste_mode = True
+                        state = PASTE_COMPONENT
+                    else:
+                        print("No components available to paste!")
+                        # Fall back to select mode if no components
+                        placement_mode = "select"
+                        no_components_error = 120
+                        
+                    continue
 
             if state == MENU:
-                if 250 <= my <= 300:
-                    grid_width = 100
-                    grid_height = 100
+                if  250 <= my <= 300:
+
+                    grid_width = 250
+                    grid_height = 250
                     grid = [[{"type": "empty", "powered": False} for _ in range(grid_width)] for _ in range(grid_height)]
                     selected_cells.clear()
                     lasso_start = None
@@ -1640,6 +2040,7 @@ while running:
                     continue
                 elif lasso_button_rect.collidepoint(mx, my):
                     placement_mode = "select"
+                    continue
                 elif delete_button_rect.collidepoint(mx, my):
                     placement_mode = "delete"
                     clear_lasso_selection()
@@ -1668,6 +2069,9 @@ while running:
                     x = int((mx / zoom + camera_x) // GRID_SIZE)
                     y = int((my / zoom + camera_y) // GRID_SIZE)
                     if 0 <= x < grid_width and 0 <= y < grid_height:
+                        # Start dragging mode for placement
+                        dragging_placement = True
+                        
                         if placement_mode == "redstone":
                             grid[y][x] = {"type": "redstone", "powered": False}
                             propagate_power()
@@ -1708,6 +2112,8 @@ while running:
                             frequency = 30
                             grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
                             propagate_power()
+                            grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
+                            propagate_power()
                             propagate_power()
                         elif placement_mode == "delete":
                             cell = grid[y][x]
@@ -1729,6 +2135,7 @@ while running:
                                 grid[y][x] = {"type": "empty", "powered": False}
                             propagate_power()
                             propagate_power()
+                    
 
                 elif event.button == 3:
                     panning = True
@@ -1760,8 +2167,83 @@ while running:
                             load_component_to_grid(components_list[idx])
                             state = BUILD_MODE
 
+            elif state == PASTE_COMPONENT:
+                if 20 <= mx <= 100 and 20 <= my <= 60:  # Back button
+                    state = BUILD_MODE
+                    paste_mode = False
+                else:
+                    # Select component to paste
+                    idx = (my - 100) // 40
+                    if 0 <= idx < len(components_list):
+                        selected_component = components_list[idx]
+                        # Store the selected component and switch to placement mode
+                        selected_paste_component = selected_component
+                        state = BUILD_MODE
+                        paste_mode = False
+                        placement_mode = "paste_component"
+                        if selected_paste_component:
+                            # Check if component can be placed
+                            if can_place_component(selected_paste_component, x, y):
+                                place_component(selected_paste_component, x, y)
+                                propagate_power()
+                                print(f"Component '{selected_paste_component['name']}' placed at ({x}, {y})")
+                                # Reset to select mode after placing
+                                placement_mode = "select"
+                                selected_paste_component = None
+                            else:
+                                # Show error
+                                placement_error_timer = 60  # Show error for 60 frames
+                                print(f"Cannot place component at ({x}, {y})")
+                        else:
+                            print("No component selected for pasting!")
+                            placement_mode = "select"
+                        print(f"Selected '{selected_component['name']}' for pasting. Click where you want to place it.")
+
         elif event.type == pygame.MOUSEMOTION:
-            if placement_mode == "select" and lasso_start:
+            # Handle zoom slider dragging
+            if zoom_slider_dragging and zoom_bar_info and zoom_bar_info.get('visible', False):
+                mx, my = event.pos
+                slider_rect = zoom_bar_info['slider_track']
+                click_ratio = (mx - slider_rect.x) / slider_rect.width
+                click_ratio = max(0, min(1, click_ratio))  # Clamp to 0-1
+                min_zoom, max_zoom = 0.2, 3.0
+                target_zoom = min_zoom + click_ratio * (max_zoom - min_zoom)
+            # Handle placement dragging
+            elif dragging_placement and state == BUILD_MODE:
+                mx, my = event.pos
+                x = int((mx / zoom + camera_x) // GRID_SIZE)
+                y = int((my / zoom + camera_y) // GRID_SIZE)
+                if 0 <= x < grid_width and 0 <= y < grid_height:
+                    # Only place certain types while dragging (avoid gates which are multi-cell)
+                    if placement_mode == "redstone" and grid[y][x]["type"] == "empty":
+                        grid[y][x] = {"type": "redstone", "powered": False}
+                        propagate_power()
+                    elif placement_mode == "bridge" and grid[y][x]["type"] == "empty":
+                        grid[y][x] = {"type": "bridge", "powered": False}
+                        propagate_power()
+                    elif placement_mode == "power" and grid[y][x]["type"] == "empty":
+                        grid[y][x] = {"type": "power", "powered": True}
+                        propagate_power()
+                    elif placement_mode == "delete" and grid[y][x]["type"] != "empty":
+                        cell = grid[y][x]
+                        if cell["type"] == "gate":
+                            gate_type = cell["gate_type"]
+                            local_pos = cell["local_pos"]
+                            gate_def = GATE_DEFINITIONS[gate_type]
+                            w, h = gate_def["size"]
+                            origin_x = x - local_pos[0]
+                            origin_y = y - local_pos[1]
+                            for dy in range(h):
+                                for dx in range(w):
+                                    gx = origin_x + dx
+                                    gy = origin_y + dy
+                                    if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                                        if grid[gy][gx].get("type") == "gate" and grid[gy][gx].get("gate_type") == gate_type:
+                                            grid[gy][gx] = {"type": "empty", "powered": False}
+                        else:
+                            grid[y][x] = {"type": "empty", "powered": False}
+                        propagate_power()
+            elif placement_mode == "select" and lasso_start:
                 lasso_end = (int((event.pos[0] / zoom + camera_x) // GRID_SIZE),
                              int((event.pos[1] / zoom + camera_y) // GRID_SIZE))
             elif panning:
@@ -1772,6 +2254,11 @@ while running:
                 last_mouse_x, last_mouse_y = event.pos
 
         elif event.type == pygame.MOUSEBUTTONUP:
+            # Stop zoom slider dragging
+            if event.button == 1:
+                zoom_slider_dragging = False
+                dragging_placement = False  # Stop placement dragging
+            
             if placement_mode == "select" and event.button == 1 and lasso_start:
                 x1, y1 = lasso_start
                 x2, y2 = lasso_end
