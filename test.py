@@ -1,24 +1,65 @@
+import os
 import pygame
 import math  
 import json
-import os
 
+# Try to enable hardware acceleration with improved settings
+os.environ['SDL_VIDEODRIVER'] = 'windows'  # Use native Windows driver for better performance
+os.environ['SDL_RENDER_DRIVER'] = 'direct3d'  # Use Direct3D on Windows
+os.environ['SDL_RENDER_SCALE_QUALITY'] = '1'  # Enable linear filtering
+os.environ['SDL_VIDEO_ACCELERATED'] = '1'  # Force hardware acceleration
+
+#fixed d - latch logic
 COMPONENTS_FILE = "components.json"
 VIEW_COMPONENTS = "view_components"
 NAMING_COMPONENT = "naming_component"
+PASTE_COMPONENT = "paste_component"
 component_name_input = ""
 editing_component_index = None
 
+# Context menu variables
+context_menu_visible = False
+context_menu_pos = (0, 0)
+paste_component_rect = None
+
 def save_component(selected_cells, grid, name=None):
     global grid_width, grid_height
-    width, height = grid_width, grid_height
-    component_grid = []
-    for y in range(height):
-        row = []
-        for x in range(width):
+    
+    # Find bounding box of all non-empty cells
+    min_x, max_x = grid_width, -1
+    min_y, max_y = grid_height, -1
+    
+    for y in range(grid_height):
+        for x in range(grid_width):
             cell = grid[y][x]
-            row.append(cell)
-        component_grid.append(row)
+            if cell["type"] != "empty":
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
+    
+    # If no non-empty cells found, save a 1x1 empty component
+    if max_x == -1:
+        width, height = 1, 1
+        component_grid = [[{"type": "empty", "powered": False}]]
+        print("No non-empty cells found, saving empty component")
+    else:
+        # Calculate dimensions of bounding box
+        width = max_x - min_x + 1
+        height = max_y - min_y + 1
+        
+        # Extract only the cells within the bounding box
+        component_grid = []
+        for y in range(min_y, max_y + 1):
+            row = []
+            for x in range(min_x, max_x + 1):
+                cell = grid[y][x].copy()
+                row.append(cell)
+            component_grid.append(row)
+        
+        print(f"Saving component with bounding box: ({min_x}, {min_y}) to ({max_x}, {max_y})")
+        print(f"Component dimensions: {width}x{height}")
+    
     if not name:
         name = "Component"
     component = {"name": name, "width": width, "height": height, "grid": component_grid}
@@ -34,14 +75,16 @@ def load_components():
     with open(COMPONENTS_FILE, "r") as f:
         return json.load(f)
 
-
+propagation_mode = False
 pygame.init()
 WIDTH, HEIGHT = 800, 600
 GRID_SIZE = 20
 GRID_COLOR = (100, 100, 100, 150)
 REDSTONE_BASE = (255, 50, 50)
 
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+# Enable hardware acceleration and create screen with optimal flags
+pygame.display.set_mode((WIDTH, HEIGHT), pygame.HWSURFACE | pygame.DOUBLEBUF)
+screen = pygame.display.get_surface()
 clock = pygame.time.Clock()
 font = pygame.font.Font(None, 36) 
 
@@ -60,19 +103,43 @@ zoom_speed = 0.1
 
 panning = False
 last_mouse_x, last_mouse_y = 0, 0
+dragging_placement = False  # Track if we're dragging to place items
 
 
-grid_width = 100  
-grid_height = 100
+grid_width = 500
+grid_height = 500
 
 grid = [[{"type": "empty", "powered": False, "frequency": None, "timer": 0} for _ in range(grid_width)] for _ in range(grid_height)]
 placement_mode = "redstone" 
 lasso_start = None
 lasso_end = None
 selected_cells = set()
-item_menu_anim = 0.0  
+item_menu_anim = 0.0
+
+# Context menu variables
+context_menu_visible = False
+context_menu_pos = (0, 0)
+paste_component_rect = None
+placement_error_timer = 0
+no_components_error = 0
+paste_mode = False
+paste_target_pos = (0, 0)
+components_list = []
+selected_component_index = 0
+selected_paste_component = None
+
+# Zoom bar variables
+zoom_bar_anim = 0.0
+zoom_bar_height = 60
+zoom_slider_dragging = False
+
+# Performance tracking
+frame_count = 0
+fps_timer = 0
+current_fps = 0
 
 
+zoom_slider_dragging = False
 
 menu_button_rect = pygame.Rect(10, 10, 40, 40) 
 side_menu_rect = pygame.Rect(0, 0, 200, HEIGHT)  
@@ -91,6 +158,7 @@ lasso_button_rect = pygame.Rect(WIDTH - 110, 380, 90, 30)
 save_component_button_rect = pygame.Rect(20, 110, 160, 40)
 clock_button_rect = pygame.Rect(WIDTH - 110, 420, 90, 30)
 bridge_button_rect = pygame.Rect(WIDTH - 110, 460, 90, 30) 
+one_way_button_rect = pygame.Rect(WIDTH - 110, 490, 90, 30)
 
 
 
@@ -106,6 +174,7 @@ item_menu_anim = 0.0
 
 button_scales = {mode: 1.0 for mode, _, _ in [
     ("redstone", redstone_button_rect, "Redstone"),
+    ("one_way", one_way_button_rect, "One Way"),
     ("bridge", bridge_button_rect, "Bridge"),
     ("power", power_button_rect, "Power"),
     ("or", or_button_rect, "OR"),
@@ -125,6 +194,33 @@ hover_states = {0: False, 1: False, 2: False}
 text_scales = [1.0, 1.0, 1.0]
 TARGET_SCALE = 1.15 
 SCALE_SPEED = 0.2  
+
+ONE_WAY_TYPES = {
+    "0-one_way": {
+        "size": (1, 1),  # 1x1 square
+        "inputs": [(0, 0)],  # input at center
+        "output": (0, -1),  # output above (up)
+        "logic": "one_way"
+    },
+    "1-one_way": {
+        "size": (1, 1),
+        "inputs": [(0, 0)],
+        "output": (1, 0),  # output right
+        "logic": "one_way"
+    },
+    "2-one_way": {
+        "size": (1, 1),
+        "inputs": [(0, 0)],
+        "output": (0, 1),  # output below (down)
+        "logic": "one_way"
+    },
+    "3-one_way": {
+        "size": (1, 1),
+        "inputs": [(0, 0)],
+        "output": (-1, 0),  # output left
+        "logic": "one_way"
+    },
+}
 GATE_DEFINITIONS = {
     "0-or": {
         "size": (3, 2),
@@ -321,13 +417,37 @@ def place_gate(x, y, gate_type, rotation):
                 "type": "gate",
                 "gate_type": typeOfGate,
                 "local_pos": (dx, dy),
-                "powered": False
+                "powered": False,
+                "previous_output": False,  # Add previous state tracking
+                "evaluated_this_cycle": False  # Track if evaluated this cycle
             }
 
 
     assign_gate_id_to_group(x, y, w, h)
 
+def place_one_way(x, y, rotation):
+    definition = ONE_WAY_TYPES[f"{rotation}-one_way"]
+    w, h = definition["size"]
 
+
+    for dy in range(h):
+        for dx in range(w):
+            gx = x + dx
+            gy = y + dy
+            if not (0 <= gx < grid_width and 0 <= gy < grid_height):
+                return
+            if grid[gy][gx]["type"] != "empty":
+                return  
+
+
+    for dy in range(h):
+        for dx in range(w):
+            gx = x + dx
+            gy = y + dy
+            grid[gy][gx] = {
+                "type": f"{rotation}-one_way",
+                "powered": False,
+            }
 
 
 
@@ -389,12 +509,23 @@ YELLOW = (255, 255, 0)
 WHITE = (255, 255, 255)  
 
 def draw_cell_inspector():
+    global frame_count, fps_timer, current_fps
+    
+    # Update FPS counter
+    frame_count += 1
+    fps_timer += clock.get_time()
+    if fps_timer >= 1000:  # Update every second
+        current_fps = frame_count
+        frame_count = 0
+        fps_timer = 0
+    
     mouse_x, mouse_y = pygame.mouse.get_pos()
     grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
     grid_y = int((mouse_y / zoom + camera_y) // GRID_SIZE)
     if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
         cell = grid[grid_y][grid_x]
         lines = [
+            f"FPS: {current_fps}",  # Add FPS display
             f"Cell: ({grid_x}, {grid_y})",
             f"Type: {cell.get('type', 'empty')}",
             f"Powered: {cell.get('powered', False)}"
@@ -509,21 +640,290 @@ def clear_lasso_selection():
     lasso_start = None
     lasso_end = None
 
-def propagate_power():
-    for row in grid:
-        for cell in row:
-            if cell["type"] != "clock":
-                cell["powered"] = False
+def draw_context_menu():
+    """Draw the right-click context menu"""
+    global paste_component_rect
+    
+    if not context_menu_visible:
+        return
+    
+    menu_x, menu_y = context_menu_pos
+    menu_width, menu_height = 150, 40
+    
+    # Adjust position if menu would go off screen
+    if menu_x + menu_width > WIDTH:
+        menu_x = WIDTH - menu_width
+    if menu_y + menu_height > HEIGHT:
+        menu_y = HEIGHT - menu_height
+    
+    # Draw menu background
+    menu_rect = pygame.Rect(menu_x, menu_y, menu_width, menu_height)
+    pygame.draw.rect(screen, (60, 60, 60), menu_rect, border_radius=5)
+    pygame.draw.rect(screen, (100, 100, 100), menu_rect, 2, border_radius=5)
+    
+    # Draw "Paste Component" option
+    paste_component_rect = pygame.Rect(menu_x + 5, menu_y + 5, menu_width - 10, 30)
+    
+    mouse_pos = pygame.mouse.get_pos()
+    is_hover = paste_component_rect.collidepoint(mouse_pos)
+    
+    if is_hover:
+        pygame.draw.rect(screen, (80, 80, 80), paste_component_rect, border_radius=3)
+    
+    # Draw text
+    font_small = pygame.font.Font(None, 24)
+    text = font_small.render("Paste Component", True, (255, 255, 255))
+    text_rect = text.get_rect(center=paste_component_rect.center)
+    screen.blit(text, text_rect)
 
 
+def draw_no_component_error():
+    """Draw error message when component can't be placed"""
+    global no_components_error
+
+    if no_components_error <= 0:
+        return
+    
+    error_text = "You need to create a component first!"
+    error_font = pygame.font.Font(None, 32)
+    error_surf = error_font.render(error_text, True, (255, 100, 100))
+    
+    # Draw error with background
+    error_rect = error_surf.get_rect(center=(WIDTH//2, HEIGHT//2))
+    bg_rect = error_rect.inflate(20, 10)
+    
+    # Fade effect
+    alpha = min(255, no_components_error * 8)
+    fade_surface = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+    fade_surface.fill((50, 20, 20, alpha))
+    
+    screen.blit(fade_surface, bg_rect)
+    pygame.draw.rect(screen, (200, 100, 100, alpha), bg_rect, 2, border_radius=8)
+    
+    error_surf.set_alpha(alpha)
+    screen.blit(error_surf, error_rect)
+
+    no_components_error -= 1
+
+
+def draw_component_placement_error():
+    """Draw error message when component can't be placed"""
+    global placement_error_timer
+
+    
+    if placement_error_timer <= 0:
+        return
+    
+    error_text = "Cannot place component here!"
+    error_font = pygame.font.Font(None, 32)
+    error_surf = error_font.render(error_text, True, (255, 100, 100))
+    
+    # Draw error with background
+    error_rect = error_surf.get_rect(center=(WIDTH//2, HEIGHT//2))
+    bg_rect = error_rect.inflate(20, 10)
+    
+    # Fade effect
+    alpha = min(255, placement_error_timer * 8)
+    fade_surface = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+    fade_surface.fill((50, 20, 20, alpha))
+    
+    screen.blit(fade_surface, bg_rect)
+    pygame.draw.rect(screen, (200, 100, 100, alpha), bg_rect, 2, border_radius=8)
+    
+    error_surf.set_alpha(alpha)
+    screen.blit(error_surf, error_rect)
+    
+    placement_error_timer -= 1
+
+def draw_zoom_bar():
+    """Draw the bottom zoom bar that appears when mouse is near bottom"""
+    global zoom_bar_anim
+    
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+    show_zoom_bar = mouse_y > HEIGHT - 100  # Show when mouse is near bottom
+    
+    target_anim = 1.0 if show_zoom_bar else 0.0
+    zoom_bar_anim += (target_anim - zoom_bar_anim) * 0.3
+    
+    if zoom_bar_anim < 0.01:
+        return  # Don't draw if barely visible
+    
+    # Calculate bar position with animation
+    bar_y = HEIGHT - int(zoom_bar_height * zoom_bar_anim)
+    bar_rect = pygame.Rect(0, bar_y, WIDTH, zoom_bar_height)
+    
+    # Draw background
+    pygame.draw.rect(screen, (40, 40, 40), bar_rect)
+    pygame.draw.rect(screen, (80, 80, 80), (0, bar_y, WIDTH, 2))  # Top border
+    
+    # Zoom controls
+    zoom_label_font = pygame.font.Font(None, 24)
+    zoom_label = zoom_label_font.render("Zoom:", True, (255, 255, 255))
+    screen.blit(zoom_label, (20, bar_y + 20))
+    
+    # Zoom percentage display
+    zoom_percent = int(zoom * 100)
+    zoom_text = zoom_label_font.render(f"{zoom_percent}%", True, (255, 255, 255))
+    screen.blit(zoom_text, (80, bar_y + 20))
+    
+    # Zoom slider
+    slider_x = 180
+    slider_y = bar_y + 25
+    slider_width = 200
+    slider_height = 10
+    
+    # Slider track
+    slider_track = pygame.Rect(slider_x, slider_y, slider_width, slider_height)
+    pygame.draw.rect(screen, (60, 60, 60), slider_track, border_radius=5)
+    
+    # Zoom range: 0.2 to 3.0
+    min_zoom, max_zoom = 0.2, 3.0
+    zoom_ratio = (zoom - min_zoom) / (max_zoom - min_zoom)
+    zoom_ratio = max(0, min(1, zoom_ratio))  # Clamp to 0-1
+    
+    # Slider handle
+    handle_x = slider_x + int(zoom_ratio * slider_width) - 5
+    handle_rect = pygame.Rect(handle_x, slider_y - 5, 10, slider_height + 10)
+    pygame.draw.rect(screen, (120, 120, 255), handle_rect, border_radius=3)
+    
+    # Zoom buttons
+    zoom_out_button = pygame.Rect(400, bar_y + 15, 30, 30)
+    zoom_in_button = pygame.Rect(440, bar_y + 15, 30, 30)
+    
+    # Check for hover
+    mouse_pos = pygame.mouse.get_pos()
+    zoom_out_hover = zoom_out_button.collidepoint(mouse_pos)
+    zoom_in_hover = zoom_in_button.collidepoint(mouse_pos)
+    
+    # Draw zoom out button
+    zoom_out_color = (80, 80, 200) if zoom_out_hover else (60, 60, 60)
+    pygame.draw.rect(screen, zoom_out_color, zoom_out_button, border_radius=5)
+    minus_font = pygame.font.Font(None, 24)
+    minus_text = minus_font.render("-", True, (255, 255, 255))
+    minus_rect = minus_text.get_rect(center=zoom_out_button.center)
+    screen.blit(minus_text, minus_rect)
+    
+    # Draw zoom in button
+    zoom_in_color = (80, 80, 200) if zoom_in_hover else (60, 60, 60)
+    pygame.draw.rect(screen, zoom_in_color, zoom_in_button, border_radius=5)
+    plus_text = minus_font.render("+", True, (255, 255, 255))
+    plus_rect = plus_text.get_rect(center=zoom_in_button.center)
+    screen.blit(plus_text, plus_rect)
+    
+    # Reset zoom button
+    reset_button = pygame.Rect(480, bar_y + 15, 60, 30)
+    reset_hover = reset_button.collidepoint(mouse_pos)
+    reset_color = (80, 80, 200) if reset_hover else (60, 60, 60)
+    pygame.draw.rect(screen, reset_color, reset_button, border_radius=5)
+    reset_text = zoom_label_font.render("Reset", True, (255, 255, 255))
+    reset_rect = reset_text.get_rect(center=reset_button.center)
+    screen.blit(reset_text, reset_rect)
+      # Propagate mode button
+    propagate_mode_button = pygame.Rect(550, bar_y + 15, 100, 30)
+    propagate_hover = propagate_mode_button.collidepoint(mouse_pos)
+    propagate_color = (175, 225, 175)
+    if not propagation_mode:
+        propagate_color = (191, 96, 87)
+    elif propagation_mode:
+        propagate_color = (175, 225, 175)
+    pygame.draw.rect(screen, propagate_color, propagate_mode_button, border_radius=5)
+    propagate_text = zoom_label_font.render("Propagate", True, (255, 255, 255))
+    propagate_rect = propagate_text.get_rect(center=propagate_mode_button.center)
+    screen.blit(propagate_text, propagate_rect)
+    
+    return {
+        'zoom_out_button': zoom_out_button,
+        'zoom_in_button': zoom_in_button,
+        'reset_button': reset_button,
+        'slider_track': slider_track,
+        'visible': zoom_bar_anim > 0.01,
+        'propagate_mode_button': propagate_mode_button,
+    }
+
+
+def can_place_component(component, x, y):
+    """Check if a component can be placed at the given position"""
+    comp_w, comp_h = component["width"], component["height"]
+    
+    # Check if component fits within grid bounds
+    if x + comp_w > grid_width or y + comp_h > grid_height:
+        return False
+    
+    # Check if all cells are empty
+    for dy in range(comp_h):
+        for dx in range(comp_w):
+            gx, gy = x + dx, y + dy
+            if grid[gy][gx]["type"] != "empty":
+                return False
+    
+    return True
+
+def place_component(component, x, y):
+    """Place a component at the given position"""
+    global gate_counter
+    comp_w, comp_h = component["width"], component["height"]
+    comp_grid = component["grid"]
+    
+    # Track gate IDs that need to be reassigned
+    old_to_new_gate_id = {}
+    
+    for dy in range(comp_h):
+        for dx in range(comp_w):
+            gx, gy = x + dx, y + dy
+            cell = comp_grid[dy][dx].copy()
+            
+            # Fix local_pos if it's a list (should be tuple)
+            if cell.get("type") == "gate" and "local_pos" in cell:
+                if isinstance(cell["local_pos"], list):
+                    cell["local_pos"] = tuple(cell["local_pos"])
+                
+                # Reassign gate ID
+                old_gate_id = cell.get("gate_id")
+                if old_gate_id is not None:
+                    if old_gate_id not in old_to_new_gate_id:
+                        old_to_new_gate_id[old_gate_id] = gate_counter
+                        gate_counter += 1
+                    cell["gate_id"] = old_to_new_gate_id[old_gate_id]
+            
+            grid[gy][gx] = cell
+    
+    print(f"Component '{component['name']}' placed at ({x}, {y})")
+
+def collect_gates_by_id():
+    """Collect all gates organized by their gate_id in a single pass"""
     gates_by_id = {}
     for y in range(grid_height):
         for x in range(grid_width):
             cell = grid[y][x]
             if cell["type"] == "gate" and "gate_id" in cell:
                 gates_by_id.setdefault(cell["gate_id"], []).append((x, y, cell))
+    return gates_by_id
 
+def store_previous_gate_outputs(gates_by_id):
+    """Store previous gate outputs before resetting power states"""
+    print("=== Storing previous outputs ===")
+    for gate_id, gate_cells in gates_by_id.items():
+        for x, y, cell in gate_cells:
+            if cell["local_pos"] == (0, 0):  # Only gate origins
+                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+                if gate_def:
+                    out_dx, out_dy = gate_def["output"]
+                    out_x, out_y = x + out_dx, y + out_dy
+                    if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+                        output_cell = grid[out_y][out_x]
+                        prev_output = output_cell.get("powered", False)
+                        output_cell["previous_output"] = prev_output
+                        print(f"Gate at ({x}, {y}): storing previous output {prev_output}")
 
+def reset_power_states():
+    """Reset all power states except for clocks in a single pass"""
+    for row in grid:
+        for cell in row:
+            if cell["type"] != "clock":
+                cell["powered"] = False
+
+def process_power_sources_and_clocks():
+    """Process power sources and clocks in a single grid pass"""
     for y in range(grid_height):
         for x in range(grid_width):
             cell = grid[y][x]
@@ -537,40 +937,102 @@ def propagate_power():
                 if cell["powered"]:
                     propagate_from(x, y)
 
+def get_sorted_gate_origins(gates_by_id):
+    """Get all gate origins sorted by position for consistent evaluation order"""
+    gate_origins = []
+    for gate_id, gate_cells in gates_by_id.items():
+        for x, y, cell in gate_cells:
+            if cell["local_pos"] == (0, 0):  # Only gate origins
+                gate_origins.append((x, y, cell))
+    
+    # Sort by x-coordinate first, then y-coordinate for deterministic order
+    gate_origins.sort(key=lambda gate: (gate[0], gate[1]))
+    return gate_origins
 
+def reset_gate_evaluation_flags(gates_by_id):
+    """Reset evaluation flags for all gates"""
+    for gate_id, gate_cells in gates_by_id.items():
+        for x, y, cell in gate_cells:
+            cell["evaluated_this_cycle"] = False
+
+def evaluate_single_gate(x, y, cell, gate_def):
+    """Evaluate a single gate and update its output if changed"""
+    print(f"\nProcessing gate at ({x}, {y}) - {cell['gate_type']}")
+    
+    # Get previous output for debugging
+    out_dx, out_dy = gate_def["output"]
+    out_x, out_y = x + out_dx, y + out_dy
+    if 0 <= out_x < grid_width and 0 <= out_y < grid_height:
+        output_cell = grid[out_y][out_x]
+        print(f"  Previous output was: {output_cell.get('previous_output', False)}")
+    
+    # Evaluate gate logic
+    out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
+
+    if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
+        print(f"  Output position ({out_x}, {out_y}) out of bounds!")
+        return False
+
+    out_cell = grid[out_y][out_x]
+    
+    # Mark this gate as evaluated
+    out_cell["evaluated_this_cycle"] = True
+    print(f"  Marked gate as evaluated this cycle")
+    
+    # Check if output changed and propagate accordingly
+    if out_cell["powered"] != output_logic:
+        old_value = out_cell["powered"]
+        out_cell["powered"] = output_logic
+        print(f"  OUTPUT CHANGED: {old_value} -> {output_logic}")
+        
+        if output_logic:
+            print(f"  Propagating power from ({out_x}, {out_y})")
+            propagate_from(out_x, out_y)
+        else:
+            print(f"  Removing power from ({out_x}, {out_y})")
+            propagate_no_power(out_x, out_y)
+        return True  # Signal that something changed
+    else:
+        print(f"  No change in output (remains {output_logic})")
+        return False
+
+def propagate_power():
+    """Main power propagation function - modularized for better performance and readability"""
+    # Step 1: Collect all gates in a single pass
+    gates_by_id = collect_gates_by_id()
+    
+    # Step 2: Store previous gate outputs before reset
+    store_previous_gate_outputs(gates_by_id)
+    
+    # Step 3: Reset all power states (except clocks)
+    reset_power_states()
+    
+    # Step 4: Process power sources and clocks
+    process_power_sources_and_clocks()
+    
+    # Step 5: Iteratively evaluate gates until stable
     changed = True
     iterations = 0
-    max_iterations = 20
+    max_iterations = 1
+    gate_origins = get_sorted_gate_origins(gates_by_id)
 
     while changed and iterations < max_iterations:
         changed = False
         iterations += 1
-
-        for gate_id, gate_cells in gates_by_id.items():
-            for x, y, cell in gate_cells:
-                gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
-                if cell["local_pos"] != (0, 0):
-                    continue
-                    #15, 8
-                out_x, out_y, output_logic = evaluate_gate_output(x, y, gate_def)
-
-                if not (0 <= out_x < grid_width and 0 <= out_y < grid_height):
-                    continue
-
-                out_cell = grid[out_y][out_x]
-                
-                out_cell["powered"] = output_logic
-                if(output_logic):
-                    propagate_from(out_x, out_y)
-                    draw_grid()
-                else:
-                    propagate_no_power(out_x, out_y)
-                    draw_grid()
-                changed = True
+        
+        # Reset evaluation flags for all gates
+        reset_gate_evaluation_flags(gates_by_id)
+        
+        # Evaluate all gates in deterministic order
+        for x, y, cell in gate_origins:
+            gate_def = GATE_DEFINITIONS.get(cell["gate_type"])
+            if gate_def:
+                gate_changed = evaluate_single_gate(x, y, cell, gate_def)
+                if gate_changed:
+                    changed = True
 
 
 def propagate_no_power(x, y, direction=None):
-
     stack = [(x, y, direction)]
     visited = set()
 
@@ -609,38 +1071,208 @@ def propagate_no_power(x, y, direction=None):
                     (cx, cy-1, "vertical")
                 ]:
                     stack.append((nx, ny, ndir))
+        elif cell["type"].endswith("one_way"):
+            try:
+                rot = int(cell["type"][0])
+            except (ValueError, IndexError):
+                rot = 0
+            
+            # Define output directions for each rotation
+            # 0: right, 1: down, 2: left, 3: up
+            output_directions = [
+                (1, 0),   # 0-one_way: right
+                (0, 1),   # 1-one_way: down
+                (-1, 0),  # 2-one_way: left
+                (0, -1)   # 3-one_way: up
+            ]
+            
+            # Define input directions (opposite of output)
+            input_directions = [
+                (-1, 0),  # 0-one_way: accepts from left
+                (0, -1),  # 1-one_way: accepts from above
+                (1, 0),   # 2-one_way: accepts from right
+                (0, 1)    # 3-one_way: accepts from below
+            ]
+            
+            # Only remove power if it's coming from the output direction or no direction (source)
+            should_remove_power = False
+            if direction is None:  # Source of power removal
+                should_remove_power = True
+            else:
+                # Convert direction string to vector for comparison
+                if direction == "horizontal":
+                    # Power removal could be coming from left or right
+                    if output_directions[rot] == (1, 0):  # Outputs to right
+                        should_remove_power = True
+                    elif output_directions[rot] == (-1, 0):  # Outputs to left
+                        should_remove_power = True
+                elif direction == "vertical":
+                    # Power removal could be coming from above or below
+                    if output_directions[rot] == (0, 1):  # Outputs down
+                        should_remove_power = True
+                    elif output_directions[rot] == (0, -1):  # Outputs up
+                        should_remove_power = True
+            
+            # Only propagate power removal if appropriate
+            if should_remove_power:
+                cell["powered"] = False
+                dx, dy = input_directions[rot]
+                # Set the direction for the next cell
+                if dx != 0:  # Horizontal input
+                    next_direction = "horizontal"
+                else:  # Vertical input
+                    next_direction = "vertical"
+                stack.append((cx + dx, cy + dy, next_direction))
+                
         elif cell["type"] == "gate":
             gate_type = cell.get("gate_type")
             local_pos = cell.get("local_pos")
             gate_def = GATE_DEFINITIONS.get(gate_type, {})
-            if local_pos in gate_def.get("inputs", []):
-                cell["powered"] = False
+            if local_pos in gate_def.get("inputs", []) or local_pos == gate_def.get("output"):
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    stack.append((nx, ny, ndir))
+
+def trace_power_source(x, y, exclude_gate_id=None):
+    """Trace back along wires to find the actual power source for this position"""
+    visited = set()
+    
+    # Start by looking at adjacent cells with their directions
+    # This avoids starting within the same gate
+    initial_cells = []
+    for nx, ny, ndir in [(x+1, y, "horizontal"), (x-1, y, "horizontal"), (x, y+1, "vertical"), (x, y-1, "vertical")]:
+        if 0 <= nx < grid_width and 0 <= ny < grid_height:
+            neighbor_cell = grid[ny][nx]
+            # Skip cells that belong to the same gate we're evaluating
+            if exclude_gate_id is not None and neighbor_cell.get("gate_id") == exclude_gate_id:
+                print(f"    Skipping ({nx}, {ny}) - same gate ID {exclude_gate_id}")
                 continue
+            initial_cells.append((nx, ny, ndir))
+    
+    stack = initial_cells
+    
+    while stack:
+        cx, cy, direction = stack.pop()
 
+        if(cx == 7 and cy == 9):
+            print("hi")
+        if (cx, cy, direction) in visited:
+            continue
+        visited.add((cx, cy, direction))
+        
+        if not (0 <= cx < grid_width and 0 <= cy < grid_height):
+            continue
+            
+        cell = grid[cy][cx]
+        
+        # Skip cells that belong to the same gate we're evaluating
+        if exclude_gate_id is not None and cell.get("gate_id") == exclude_gate_id:
+            print(f"    Skipping ({cx}, {cy}) - same gate ID {exclude_gate_id}")
+            continue
+        
+        # If we find a power source, return its state
+        if cell["type"] == "power":
+            print(f"    Found power source at ({cx}, {cy}): {cell.get('powered', False)}")
+            return cell.get("powered", False)
+        elif cell["type"] == "clock":
+            print(f"    Found clock at ({cx}, {cy}): {cell.get('powered', False)}")
+            return cell.get("powered", False)
+        elif cell["type"] == "gate":
+            gate_def = GATE_DEFINITIONS.get(cell["gate_type"], {})
+            local_pos = cell.get("local_pos", (0, 0))
+            
+            # If this is a gate output position
             if local_pos == gate_def.get("output"):
-                # Only propagate if the output is already powered by the gate logic
-                if cell["powered"]:
-                    for nx, ny, ndir in [
-                        (cx+1, cy, "horizontal"),
-                        (cx-1, cy, "horizontal"),
-                        (cx, cy+1, "vertical"),
-                        (cx, cy-1, "vertical")
-                    ]:
+                # Check if this gate has been evaluated this cycle
+                if cell.get("evaluated_this_cycle", False):
+                    print(f"    Found evaluated gate output at ({cx}, {cy}): {cell.get('powered', False)}")
+                    return cell.get("powered", False)
+                else:
+                    print(f"    Found unevaluated gate output at ({cx}, {cy}): using previous {cell.get('previous_output', False)}")
+                    return cell.get("previous_output", False)
+            # If it's a gate input, DON'T continue tracing - this gate is consuming power, not providing it
+            elif local_pos in gate_def.get("inputs", []):
+                print(f"    Found gate input at ({cx}, {cy}) - this gate consumes power, not providing it. Skipping.")
+                continue  # Don't trace through gate inputs
+        # Handle redstone, power, or, clock with proper propagation
+        elif cell["type"] in ["redstone", "power", "or", "clock"]:
+            for nx, ny, ndir in [
+                (cx+1, cy, "horizontal"),
+                (cx-1, cy, "horizontal"),
+                (cx, cy+1, "vertical"),
+                (cx, cy-1, "vertical")
+            ]:
+                if (nx, ny, ndir) not in visited:
+                    stack.append((nx, ny, ndir))
+        # Handle bridge with proper directional logic - THIS IS THE KEY FIX
+        elif cell["type"] == "bridge":
+            if direction == "horizontal":
+                for nx, ny in [(cx+1, cy), (cx-1, cy)]:
+                    if (nx, ny, "horizontal") not in visited:
+                        stack.append((nx, ny, "horizontal"))
+            elif direction == "vertical":
+                for nx, ny in [(cx, cy+1), (cx, cy-1)]:
+                    if (nx, ny, "vertical") not in visited:
+                        stack.append((nx, ny, "vertical"))
+            else:
+                # If direction is None, try both directions
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    if (nx, ny, ndir) not in visited:
                         stack.append((nx, ny, ndir))
-                
-
-
+        # Handle other gate cells (inputs/outputs)
+        elif cell["type"] == "gate":
+            gate_type = cell.get("gate_type")
+            local_pos = cell.get("local_pos")
+            gate_def = GATE_DEFINITIONS.get(gate_type, {})
+            if local_pos in gate_def.get("inputs", []) or local_pos == gate_def.get("output"):
+                for nx, ny, ndir in [
+                    (cx+1, cy, "horizontal"),
+                    (cx-1, cy, "horizontal"),
+                    (cx, cy+1, "vertical"),
+                    (cx, cy-1, "vertical")
+                ]:
+                    if (nx, ny, ndir) not in visited:
+                        stack.append((nx, ny, ndir))
+    
+    # No power source found
+    print(f"    No power source found for ({x}, {y})")
+    return False
 
 
 def evaluate_gate_output(x, y, definition):
+    print(f"\n=== Evaluating gate at ({x}, {y}) ===")
+    
+    # Get the current gate's ID to avoid tracing through it
+    current_gate_id = None
+    if 0 <= x < grid_width and 0 <= y < grid_height:
+        current_gate_id = grid[y][x].get("gate_id")
+        print(f"  Current gate ID: {current_gate_id}")
+    
     inputs_powered = []
+    
     for dx, dy in definition["inputs"]:
         gx, gy = x + dx, y + dy
         if 0 <= gx < grid_width and 0 <= gy < grid_height:
-            inputs_powered.append(grid[gy][gx]["powered"])
-            print(f"Input cell ({gx}, {gy}) powered: {grid[gy][gx]['powered']}")
-    print(f"Evaluating NAND gate at ({x}, {y}) with inputs: {inputs_powered}")
-   
+            print(f"  Tracing power for input at ({gx}, {gy})")
+            
+            # Trace back from this input position to find the actual power source
+            # Pass the current gate ID to avoid tracing through the same gate
+            input_value = trace_power_source(gx, gy, current_gate_id)
+            print(f"  Input ({gx}, {gy}): traced power = {input_value}")
+            
+            inputs_powered.append(input_value)
+        
+    print(f"  Gate type: {definition['logic']}, All inputs: {inputs_powered}")
+
 
     logic = definition["logic"]
     if logic == "or":
@@ -661,7 +1293,7 @@ def evaluate_gate_output(x, y, definition):
     out_dx, out_dy = definition["output"]
     out_x, out_y = x + out_dx, y + out_dy
 
-    print(f" -> output: {output_logic}")
+    print(f"  -> Final output: {output_logic} at ({out_x}, {out_y})")
     return out_x, out_y, output_logic
 
 
@@ -746,7 +1378,59 @@ def propagate_from(x, y, direction=None):
                     (cx, cy-1, "vertical")
                 ]:
                     stack.append((nx, ny, ndir))
-
+        elif cell["type"].endswith("one_way"):
+            try:
+                rot = int(cell["type"][0])
+            except (ValueError, IndexError):
+                rot = 0
+            
+            # Define output directions for each rotation
+            # 0: right, 1: down, 2: left, 3: up
+            output_directions = [
+                (1, 0),   # 0-one_way: right
+                (0, 1),   # 1-one_way: down
+                (-1, 0),  # 2-one_way: left
+                (0, -1)   # 3-one_way: up
+            ]
+            
+            # Define input directions (opposite of output)
+            input_directions = [
+                (-1, 0),  # 0-one_way: accepts from left
+                (0, -1),  # 1-one_way: accepts from above
+                (1, 0),   # 2-one_way: accepts from right
+                (0, 1)    # 3-one_way: accepts from below
+            ]
+            
+            # Check if power is coming from the correct input direction
+            power_from_input = False
+            if direction is None:  # Source of power
+                power_from_input = True
+            else:
+                # Convert direction string to vector for comparison
+                if direction == "horizontal":
+                    # Power could be coming from left or right
+                    if input_directions[rot] == (-1, 0):  # Accepts from left
+                        power_from_input = True
+                    elif input_directions[rot] == (1, 0):  # Accepts from right
+                        power_from_input = True
+                elif direction == "vertical":
+                    # Power could be coming from above or below
+                    if input_directions[rot] == (0, -1):  # Accepts from above
+                        power_from_input = True
+                    elif input_directions[rot] == (0, 1):  # Accepts from below
+                        power_from_input = True
+            
+            # Only propagate if power is coming from the correct input direction
+            if power_from_input:
+                cell["powered"] = True
+                dx, dy = output_directions[rot]
+                # Set the output direction for the next cell
+                if dx != 0:  # Horizontal output
+                    next_direction = "horizontal"
+                else:  # Vertical output
+                    next_direction = "vertical"
+                stack.append((cx + dx, cy + dy, next_direction))
+                
         elif cell["type"] == "gate":
             gate_type = cell.get("gate_type")
             local_pos = cell.get("local_pos")
@@ -771,7 +1455,7 @@ def propagate_from(x, y, direction=None):
 needs_propagation = True
                     
 def draw_grid():
-    global copy_button_rect, delete_button_rect_popup, paste_button_rect
+    global copy_button_rect, delete_button_rect_popup, paste_button_rect, paste_component_popup_rect
 
     screen.fill((30, 30, 30))
     global zoom, camera_x, camera_y
@@ -779,20 +1463,45 @@ def draw_grid():
     camera_x = lerp(camera_x, target_camera_x, move_speed)
     camera_y = lerp(camera_y, target_camera_y, move_speed)
 
+    # Pre-calculate commonly used values
+    grid_size_zoomed = round(GRID_SIZE * zoom)
     grid_alpha = max(50, min(200, int(255 * (zoom / target_zoom))))
     grid_color_fade = (100, 100, 100, grid_alpha)
 
-    for x in range(grid_width):
-        for y in range(grid_height):
+    # Optimized culling - only process visible grid cells
+    start_x = max(0, int((camera_x) // GRID_SIZE) - 1)
+    end_x = min(grid_width, int((camera_x + WIDTH / zoom) // GRID_SIZE) + 2)
+    start_y = max(0, int((camera_y) // GRID_SIZE) - 1)
+    end_y = min(grid_height, int((camera_y + HEIGHT / zoom) // GRID_SIZE) + 2)
+    
+    # Skip rendering if zoomed out too far (cells would be too small to see)
+    if grid_size_zoomed < 2:
+        # Only draw a simplified view when zoomed out very far
+        for x in range(start_x, end_x, max(1, int(5 / zoom))):
+            for y in range(start_y, end_y, max(1, int(5 / zoom))):
+                if grid[y][x]["type"] != "empty":
+                    grid_x = round((x * GRID_SIZE - camera_x) * zoom)
+                    grid_y = round((y * GRID_SIZE - camera_y) * zoom)
+                    if -grid_size_zoomed < grid_x < WIDTH and -grid_size_zoomed < grid_y < HEIGHT:
+                        pygame.draw.rect(screen, (100, 100, 100), (grid_x, grid_y, max(1, grid_size_zoomed), max(1, grid_size_zoomed)))
+        return None  # Skip the rest of the rendering when zoomed out
+    
+    for x in range(start_x, end_x):
+        for y in range(start_y, end_y):
             grid_x = round((x * GRID_SIZE - camera_x) * zoom)
             grid_y = round((y * GRID_SIZE - camera_y) * zoom)
-            size = round(GRID_SIZE * zoom)
 
-            if -size < grid_x < WIDTH and -size < grid_y < HEIGHT:
-                rect = pygame.Rect(grid_x, grid_y, size, size)
+            # Additional bounds check for safety
+            if -grid_size_zoomed < grid_x < WIDTH and -grid_size_zoomed < grid_y < HEIGHT:
+                rect = pygame.Rect(grid_x, grid_y, grid_size_zoomed, grid_size_zoomed)
                 pygame.draw.rect(screen, grid_color_fade, rect, 1)
 
                 cell = grid[y][x]
+                
+                # Skip empty cells to save rendering time
+                if cell["type"] == "empty":
+                    continue
+                    
                 alpha = max(50, min(255, int(255 * (zoom / target_zoom))))
 
                 if cell["type"] == "redstone":
@@ -806,6 +1515,49 @@ def draw_grid():
                     pygame.draw.line(screen, (200, 200, 255), rect.midtop, rect.midbottom, 3)
                 elif cell["type"] == "power":
                     pygame.draw.rect(screen, (255, 255, 0), rect)
+                elif cell["type"].endswith("one_way"):
+                    pygame.draw.rect(screen, (255, 100, 0), rect)
+                    cx, cy = rect.center
+                    size = grid_size_zoomed
+                    # Default to 0 if not specified
+                    try:
+                        rot = int(cell["type"][0])
+                    except (ValueError, IndexError):
+                        rot = 0
+                    if rot == 0:  # right
+                        arrow = [
+                            (cx - size//4, cy - size//4),
+                            (cx - size//4, cy + size//4),
+                            (cx + size//4, cy)
+                        ]
+                    elif rot == 1:  # down
+                        arrow = [
+                            (cx - size//4, cy - size//4),
+                            (cx + size//4, cy - size//4),
+                            (cx, cy + size//4)
+                        ]
+                    elif rot == 2:  # left
+                        arrow = [
+                            (cx + size//4, cy - size//4),
+                            (cx + size//4, cy + size//4),
+                            (cx - size//4, cy)
+                        ]
+                    elif rot == 3:  # up
+                        arrow = [
+                            (cx - size//4, cy + size//4),
+                            (cx + size//4, cy + size//4),
+                            (cx, cy - size//4)
+                        ]
+                    else:
+                        arrow = [
+                            (cx - size//4, cy - size//4),
+                            (cx - size//4, cy + size//4),
+                            (cx + size//4, cy)
+                        ]
+                    pygame.draw.polygon(screen, (255, 200, 0), arrow)
+
+
+
                 elif cell["type"] == "clock":
                     color = (0, 200, 200) if cell["powered"] else (0, 100, 100)
                     pygame.draw.rect(screen, color, rect)
@@ -905,9 +1657,16 @@ def draw_grid():
         grid_y1 = round((y1 * GRID_SIZE - camera_y) * zoom)
         grid_x2 = round((x2 * GRID_SIZE - camera_x) * zoom)
         grid_y2 = round((y2 * GRID_SIZE - camera_y) * zoom)
-        rect = pygame.Rect(min(grid_x1, grid_x2), min(grid_y1, grid_y2),
-                           abs(grid_x2 - grid_x1) + GRID_SIZE, abs(grid_y2 - grid_y1) + GRID_SIZE)
-        pygame.draw.rect(screen, (100, 200, 255), rect, 2)
+        
+        # Only draw lasso if it's visible on screen
+        min_x = min(grid_x1, grid_x2)
+        max_x = max(grid_x1, grid_x2) + GRID_SIZE
+        min_y = min(grid_y1, grid_y2)
+        max_y = max(grid_y1, grid_y2) + GRID_SIZE
+        
+        if max_x >= 0 and min_x <= WIDTH and max_y >= 0 and min_y <= HEIGHT:
+            rect = pygame.Rect(min_x, min_y, abs(grid_x2 - grid_x1) + GRID_SIZE, abs(grid_y2 - grid_y1) + GRID_SIZE)
+            pygame.draw.rect(screen, (100, 200, 255), rect, 2)
     
 
 
@@ -915,46 +1674,58 @@ def draw_grid():
         mouse_x, mouse_y = pygame.mouse.get_pos()
         grid_x = int((mouse_x / zoom + camera_x) // GRID_SIZE)
         grid_y = int((mouse_y / zoom + camera_y) // GRID_SIZE)
+        
+        # Only show preview if mouse position is within visible grid bounds
         if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
-            if placement_mode in ["redstone", "power"]:
-                rect = pygame.Rect(
-                    round((grid_x * GRID_SIZE - camera_x) * zoom),
-                    round((grid_y * GRID_SIZE - camera_y) * zoom),
-                    round(GRID_SIZE * zoom),
-                    round(GRID_SIZE * zoom)
-                )
-                pygame.draw.rect(screen, (255, 248, 189), rect, 3) 
-            else:
+            preview_screen_x = round((grid_x * GRID_SIZE - camera_x) * zoom)
+            preview_screen_y = round((grid_y * GRID_SIZE - camera_y) * zoom)
+            
+            # Only render preview if it's visible on screen
+            if -GRID_SIZE < preview_screen_x < WIDTH and -GRID_SIZE < preview_screen_y < HEIGHT:
+                if placement_mode in ["redstone", "power"]:
+                    rect = pygame.Rect(
+                        preview_screen_x,
+                        preview_screen_y,
+                        round(GRID_SIZE * zoom),
+                        round(GRID_SIZE * zoom)
+                    )
+                    pygame.draw.rect(screen, (255, 248, 189), rect, 3) 
+                else:
+                    typeOfGate = f"{rotation}-{placement_mode}"
+                    gate_def = GATE_DEFINITIONS.get(typeOfGate)
+                    if gate_def:
+                        w, h = gate_def["size"]
+                        input_offsets = gate_def["inputs"]
+                        output_offset = gate_def["output"]
 
-                typeOfGate = f"{rotation}-{placement_mode}"
-                gate_def = GATE_DEFINITIONS.get(typeOfGate)
-                if gate_def:
-                    w, h = gate_def["size"]
-                    input_offsets = gate_def["inputs"]
-                    output_offset = gate_def["output"]
+                        for dx, dy in input_offsets:
+                            gx = grid_x + dx
+                            gy = grid_y + dy
+                            if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                                input_screen_x = round((gx * GRID_SIZE - camera_x) * zoom)
+                                input_screen_y = round((gy * GRID_SIZE - camera_y) * zoom)
+                                if -GRID_SIZE < input_screen_x < WIDTH and -GRID_SIZE < input_screen_y < HEIGHT:
+                                    rect = pygame.Rect(
+                                        input_screen_x,
+                                        input_screen_y,
+                                        round(GRID_SIZE * zoom),
+                                        round(GRID_SIZE * zoom)
+                                    )
+                                    pygame.draw.rect(screen, (0, 255, 0), rect, 3) 
 
-                    for dx, dy in input_offsets:
-                        gx = grid_x + dx
-                        gy = grid_y + dy
-                        if 0 <= gx < grid_width and 0 <= gy < grid_height:
-                            rect = pygame.Rect(
-                                round((gx * GRID_SIZE - camera_x) * zoom),
-                                round((gy * GRID_SIZE - camera_y) * zoom),
-                                round(GRID_SIZE * zoom),
-                                round(GRID_SIZE * zoom)
-                            )
-                            pygame.draw.rect(screen, (0, 255, 0), rect, 3) 
-
-                    out_gx = grid_x + output_offset[0]
-                    out_gy = grid_y + output_offset[1]
-                    if 0 <= out_gx < grid_width and 0 <= out_gy < grid_height:
-                        rect = pygame.Rect(
-                            round((out_gx * GRID_SIZE - camera_x) * zoom),
-                            round((out_gy * GRID_SIZE - camera_y) * zoom),
-                            round(GRID_SIZE * zoom),
-                            round(GRID_SIZE * zoom)
-                        )
-                        pygame.draw.rect(screen, (255, 200, 0), rect, 3)  
+                        out_gx = grid_x + output_offset[0]
+                        out_gy = grid_y + output_offset[1]
+                        if 0 <= out_gx < grid_width and 0 <= out_gy < grid_height:
+                            output_screen_x = round((out_gx * GRID_SIZE - camera_x) * zoom)
+                            output_screen_y = round((out_gy * GRID_SIZE - camera_y) * zoom)
+                            if -GRID_SIZE < output_screen_x < WIDTH and -GRID_SIZE < output_screen_y < HEIGHT:
+                                rect = pygame.Rect(
+                                    output_screen_x,
+                                    output_screen_y,
+                                    round(GRID_SIZE * zoom),
+                                    round(GRID_SIZE * zoom)
+                                )
+                                pygame.draw.rect(screen, (255, 200, 0), rect, 3)  
 
 
     popup_button_defs = []
@@ -964,13 +1735,14 @@ def draw_grid():
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
         popup_x = round((max_x * GRID_SIZE - camera_x) * zoom) + 10
-        popup_y = round((min_y * GRID_SIZE - camera_y) * zoom) - 40
-        button_w, button_h = 60, 30
+        popup_y = round((min_y * GRID_SIZE - camera_y) * zoom) - 160  # Move up to fit all buttons
+        button_w, button_h = 80, 30  # Make buttons wider and rectangular
 
         popup_button_defs = [
             ("copy", pygame.Rect(popup_x, popup_y, button_w, button_h), "Copy", (100, 200, 100)),
-            ("delete", pygame.Rect(popup_x + button_w + 10, popup_y, button_w, button_h), "Delete", (200, 80, 80)),
-            ("paste", pygame.Rect(popup_x + 2 * (button_w + 10), popup_y, button_w, button_h), "Paste", (80, 180, 255) if clipboard else (120, 120, 120)),
+            ("delete", pygame.Rect(popup_x, popup_y + button_h + 5, button_w, button_h), "Delete", (200, 80, 80)),
+            ("paste", pygame.Rect(popup_x, popup_y + 2 * (button_h + 5), button_w, button_h), "Paste", (80, 180, 255) if clipboard else (120, 120, 120)),
+            ("paste_component", pygame.Rect(popup_x, popup_y + 3 * (button_h + 5), button_w, button_h), "Component", (255, 180, 80)),
         ]
 
         # Track scale for popup buttons
@@ -993,32 +1765,54 @@ def draw_grid():
             draw_rect = pygame.Rect(0, 0, scaled_w, scaled_h)
             draw_rect.center = center
 
-            pastel = tuple(min(255, int(c * 0.6 + 255 * 0.4)) for c in base_color)
-            draw_color = pastel if is_hover else (0, 0, 0)
+            # Use golden yellow glow color when hovering (like cell highlight)
+            golden_glow_color = (255, 248, 189)  # Same as cell highlight color
+            draw_color = golden_glow_color if is_hover else (50, 50, 50)
 
             if is_hover:
-                glow_surface = pygame.Surface((draw_rect.width, draw_rect.height), pygame.SRCALPHA)
-                glow_center = (draw_rect.width // 2, draw_rect.height // 2)
-                max_radius = int(min(draw_rect.width, draw_rect.height) * 0.95)
-                for i in range(10, 0, -1):
-                    alpha = int(80 * (i / 10))
-                    radius = int(max_radius * (i / 10))
-                    pygame.draw.circle(
-                        glow_surface,
-                        (*base_color, alpha),
-                        glow_center,
-                        radius
-                    )
-                screen.blit(glow_surface, draw_rect.topleft)
+                # Create golden yellow glow effect
+                glow_surface = pygame.Surface((draw_rect.width + 20, draw_rect.height + 20), pygame.SRCALPHA)
+                glow_center = (glow_surface.get_width() // 2, glow_surface.get_height() // 2)
+                
+                # Create multiple layers of golden glow
+                for i in range(8, 0, -1):
+                    alpha = int(40 * (i / 8))  # Softer glow
+                    radius = int((min(draw_rect.width, draw_rect.height) // 2 + 10) * (i / 8))
+                    glow_color_with_alpha = (*golden_glow_color, alpha)
+                    
+                    # Draw circular glow
+                    for r in range(radius, 0, -2):
+                        current_alpha = max(1, alpha * (r / radius))
+                        pygame.draw.circle(
+                            glow_surface,
+                            (*golden_glow_color, int(current_alpha)),
+                            glow_center,
+                            r
+                        )
+                
+                # Position glow surface centered on button
+                glow_pos = (draw_rect.x - 10, draw_rect.y - 10)
+                screen.blit(glow_surface, glow_pos)
 
+            # Draw button with golden border when hovered
+            if is_hover:
+                # Draw golden border
+                border_rect = pygame.Rect(draw_rect.x - 2, draw_rect.y - 2, 
+                                        draw_rect.width + 4, draw_rect.height + 4)
+                pygame.draw.rect(screen, golden_glow_color, border_rect, 3, border_radius=10)
+            
             pygame.draw.rect(screen, draw_color, draw_rect, border_radius=8)
-            font_size = 22 if len(label) > 5 else 26
+            
+            # Draw button text
+            font_size = 22 if len(label) > 8 else 24
             btn_font = pygame.font.Font(None, font_size)
-            text_surf = btn_font.render(label, True, (255, 255, 255))
+            text_color = (30, 30, 30) if is_hover else (255, 255, 255)  # Dark text on golden background
+            text_surf = btn_font.render(label, True, text_color)
             text_rect = text_surf.get_rect(center=draw_rect.center)
             screen.blit(text_surf, text_rect)
 
         copy_button_rect = popup_button_defs[0][1]
+        paste_component_popup_rect = popup_button_defs[3][1]
         delete_button_rect_popup = popup_button_defs[1][1]
         paste_button_rect = popup_button_defs[2][1]
     else:
@@ -1027,16 +1821,27 @@ def draw_grid():
                 ("copy", None, None, None),
                 ("delete", None, None, None),
                 ("paste", None, None, None),
+                ("paste_component", None, None, None),
             ]}
 
+    # Only draw selected cell highlights for visible cells
     for (x, y) in selected_cells:
         grid_x = round((x * GRID_SIZE - camera_x) * zoom)
         grid_y = round((y * GRID_SIZE - camera_y) * zoom)
         size = round(GRID_SIZE * zoom)
-        pygame.draw.rect(screen, (255, 255, 0), (grid_x, grid_y, size, size), 3)
+        
+        # Only draw if the cell is visible on screen
+        if -size < grid_x < WIDTH and -size < grid_y < HEIGHT:
+            pygame.draw.rect(screen, (255, 255, 0), (grid_x, grid_y, size, size), 3)
 
     draw_hamburger_icon()
     draw_cell_inspector()
+    draw_context_menu()
+    draw_component_placement_error()
+    draw_no_component_error()
+    
+    # Draw zoom bar and get button rects
+    zoom_bar_info = draw_zoom_bar()
 
     menu_width = 120
     slide_offset = int(menu_width * (1 - item_menu_anim))
@@ -1060,6 +1865,7 @@ def draw_grid():
 
     button_defs = [
         ("redstone", redstone_button_rect, "Redstone"),
+        ("one_way", one_way_button_rect, "One Way"),
         ("bridge", bridge_button_rect, "Bridge"),
         ("power", power_button_rect, "Power"),
         ("or", or_button_rect, "OR"),
@@ -1083,6 +1889,7 @@ def draw_grid():
         is_active = (
             (mode == "redstone" and placement_mode == "redstone") or
             (mode == "bridge" and placement_mode == "bridge") or
+            (mode == "one_way" and placement_mode == "one_way") or
             (mode == "power" and placement_mode == "power") or
             (mode == "or" and placement_mode == "or") or
             (mode == "and" and placement_mode == "and") or
@@ -1224,9 +2031,11 @@ def draw_grid():
         save_text = save_font.render("Save Component", True, (255, 255, 255))
         save_text_rect = save_text.get_rect(center=save_draw_rect.center)
         screen.blit(save_text, save_text_rect)
+    
+    # Return zoom bar info for mouse handling
+    return zoom_bar_info
 
-
-def draw_components_list(components, selected_index):
+def draw_components_list(components, selected_index, paste_mode=False):
     global component_delete_rects
     screen.fill((30, 30, 30))
     y = 100
@@ -1235,29 +2044,97 @@ def draw_components_list(components, selected_index):
     back_rect = pygame.Rect(20, 20, 80, 40)
     pygame.draw.rect(screen, (80, 80, 80), back_rect, border_radius=8)
     screen.blit(back_text, back_rect.move(10, 5))
+    
+    # Show different title based on mode
+    if paste_mode:
+        title_text = "Select Component to Paste"
+        title_color = (100, 255, 100)
+    else:
+        title_text = "Components"
+        title_color = (255, 255, 255)
+    
+    title_font = pygame.font.Font(None, 36)
+    title_surf = title_font.render(title_text, True, title_color)
+    screen.blit(title_surf, (WIDTH//2 - title_surf.get_width()//2, 50))
+    
     component_delete_rects = []
     for i, comp in enumerate(components):
         color = (255, 255, 0) if i == selected_index else (200, 200, 200)
         surf = font.render(comp["name"], True, color)
         screen.blit(surf, (100, y))
-        del_rect = pygame.Rect(350, y, 80, 32)
-        pygame.draw.rect(screen, (200, 80, 80), del_rect, border_radius=8)
-        del_font = pygame.font.Font(None, 28)
-        del_text = del_font.render("Delete", True, (255, 255, 255))
-        del_text_rect = del_text.get_rect(center=del_rect.center)
-        screen.blit(del_text, del_text_rect)
-        component_delete_rects.append(del_rect)
+        
+        # Only show delete buttons if not in paste mode
+        if not paste_mode:
+            del_rect = pygame.Rect(350, y, 80, 32)
+            pygame.draw.rect(screen, (200, 80, 80), del_rect, border_radius=8)
+            del_font = pygame.font.Font(None, 28)
+            del_text = del_font.render("Delete", True, (255, 255, 255))
+            del_text_rect = del_text.get_rect(center=del_rect.center)
+            screen.blit(del_text, del_text_rect)
+            component_delete_rects.append(del_rect)
+        else:
+            component_delete_rects.append(None)
+        
         y += 40
+    
     if components:
-        preview = font.render("Click to edit", True, (180, 180, 255))
+        if paste_mode:
+            preview = font.render("Click to paste", True, (100, 255, 100))
+        else:
+            preview = font.render("Click to edit", True, (180, 180, 255))
         screen.blit(preview, (400, 80))
 
 def load_component_to_grid(component, index=None):
-    global grid, grid_width, grid_height, editing_component_index
+    global grid, grid_width, grid_height, editing_component_index, gate_counter
     comp_w, comp_h = component["width"], component["height"]
     comp_grid = component["grid"]
     grid_width, grid_height = comp_w, comp_h
-    grid = [[cell.copy() for cell in row] for row in comp_grid]
+    
+    # Create new grid and fix tuple conversion for gate local_pos
+    grid = []
+    for row in comp_grid:
+        new_row = []
+        for cell in row:
+            new_cell = cell.copy()
+            # Convert local_pos from list back to tuple if it's a gate
+            if new_cell.get("type") == "gate" and "local_pos" in new_cell:
+                if isinstance(new_cell["local_pos"], list):
+                    new_cell["local_pos"] = tuple(new_cell["local_pos"])
+            new_row.append(new_cell)
+        grid.append(new_row)
+    
+    # Reset gate_counter and reassign all gate IDs to ensure uniqueness
+    gate_counter = 0
+    
+    # Find all gate origins (gates with local_pos (0,0)) and reassign IDs
+    gate_origins = []
+    for y in range(grid_height):
+        for x in range(grid_width):
+            cell = grid[y][x]
+            if cell.get("type") == "gate" and cell.get("local_pos") == (0, 0):
+                gate_origins.append((x, y))
+    
+    # Reassign gate IDs for each gate group
+    for origin_x, origin_y in gate_origins:
+        origin_cell = grid[origin_y][origin_x]
+        gate_type = origin_cell.get("gate_type")
+        if gate_type in GATE_DEFINITIONS:
+            gate_def = GATE_DEFINITIONS[gate_type]
+            w, h = gate_def["size"]
+            
+            # Assign new gate ID to all cells in this gate
+            new_gate_id = gate_counter
+            for dy in range(h):
+                for dx in range(w):
+                    gx = origin_x + dx
+                    gy = origin_y + dy
+                    if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                        if grid[gy][gx].get("type") == "gate" and grid[gy][gx].get("gate_type") == gate_type:
+                            grid[gy][gx]["gate_id"] = new_gate_id
+            
+            gate_counter += 1
+    
+    print(f"Reassigned gate IDs after loading component. Next gate_counter: {gate_counter}")
     editing_component_index = index
 
 
@@ -1278,17 +2155,21 @@ def draw_naming_prompt(input_text):
     screen.blit(save_text, save_rect.move(20, 5))
     return save_rect
 
-
+has_propagated = False
+zoom_bar_info = None  # Store zoom bar info for mouse handling
 running = True
 while running:
     if state == MENU:
         draw_menu()
     elif state == VIEW_COMPONENTS:
-        draw_components_list(components_list, selected_component_index)
+        draw_components_list(components_list, selected_component_index, paste_mode)
+    elif state == PASTE_COMPONENT:
+        draw_components_list(components_list, selected_component_index, True)
     elif state == NAMING_COMPONENT:
         save_rect = draw_naming_prompt(component_name_input)
     else:
-        draw_grid()
+        zoom_bar_info = draw_grid()  # Capture zoom bar info
+
     mouse_x, _ = pygame.mouse.get_pos()
     show_menu = mouse_x > WIDTH - 180
     target_anim = 1.0 if show_menu else 0.0
@@ -1309,6 +2190,10 @@ while running:
                 else:
                     if len(component_name_input) < 20 and event.unicode.isprintable():
                         component_name_input += event.unicode
+            elif state == PASTE_COMPONENT:
+                if event.key == pygame.K_ESCAPE:
+                    state = BUILD_MODE
+                    paste_mode = False
             elif placement_mode == "clock":
                 if event.key == pygame.K_UP:
                     grid[y][x]["frequency"] = max(1, grid[y][x]["frequency"] - 1) 
@@ -1320,6 +2205,35 @@ while running:
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             mx, my = event.pos
+
+            # Handle zoom bar interactions first (if visible and in BUILD_MODE)
+            if state == BUILD_MODE and zoom_bar_info and zoom_bar_info.get('visible', False):
+                if zoom_bar_info['zoom_out_button'].collidepoint(mx, my):
+                    target_zoom /= 1.2
+                    target_zoom = max(0.2, target_zoom)  # Minimum zoom
+                    continue
+                elif zoom_bar_info['zoom_in_button'].collidepoint(mx, my):
+                    target_zoom *= 1.2
+                    target_zoom = min(3.0, target_zoom)  # Maximum zoom
+                    continue
+                elif zoom_bar_info['propagate_mode_button'].collidepoint(mx, my):
+                    propagation_mode = not propagation_mode
+                    if propagation_mode:
+                        propagate_power()
+                        propagate_power()
+                    continue
+                elif zoom_bar_info['reset_button'].collidepoint(mx, my):
+                    target_zoom = 1.0
+                    continue
+                elif zoom_bar_info['slider_track'].collidepoint(mx, my):
+                    # Handle slider click and start dragging
+                    zoom_slider_dragging = True
+                    slider_rect = zoom_bar_info['slider_track']
+                    click_ratio = (mx - slider_rect.x) / slider_rect.width
+                    click_ratio = max(0, min(1, click_ratio))  # Clamp to 0-1
+                    min_zoom, max_zoom = 0.2, 3.0
+                    target_zoom = min_zoom + click_ratio * (max_zoom - min_zoom)
+                    continue
 
             if state == NAMING_COMPONENT:
                 save_rect = draw_naming_prompt(component_name_input)
@@ -1355,15 +2269,32 @@ while running:
                             grid[gy][gx] = cell.copy()
                     print("Pasted selection!")
                     continue
+                elif paste_component_popup_rect and paste_component_popup_rect.collidepoint(mx, my):
+                    # Load components and switch to paste mode
+                    components_list = load_components()
+                    if components_list:  # Only show if there are components to paste
+                        selected_component_index = 0
+                        paste_mode = True
+                        state = PASTE_COMPONENT
+                    else:
+                        print("No components available to paste!")
+                        # Fall back to select mode if no components
+                        placement_mode = "select"
+                        no_components_error = 120
+                        
+                    continue
 
             if state == MENU:
-                if 250 <= my <= 300:
-                    grid_width = 100
-                    grid_height = 100
+                if  250 <= my <= 300:
+
+                    grid_width = 500
+                    grid_height = 500
                     grid = [[{"type": "empty", "powered": False} for _ in range(grid_width)] for _ in range(grid_height)]
                     selected_cells.clear()
                     lasso_start = None
                     lasso_end = None
+                    gate_counter = 0  # Reset gate counter for new component
+                    print("Started new component - reset gate_counter to 0")
                     state = BUILD_MODE
                 elif 320 <= my <= 370:
                     state = VIEW_COMPONENTS
@@ -1376,6 +2307,10 @@ while running:
                     menu_open = not menu_open
                 if redstone_button_rect.collidepoint(mx, my):
                     placement_mode = "redstone"
+                    clear_lasso_selection()
+                    continue
+                elif one_way_button_rect.collidepoint(mx, my):
+                    placement_mode = "one_way"
                     clear_lasso_selection()
                     continue
                 elif bridge_button_rect.collidepoint(mx, my):
@@ -1412,6 +2347,7 @@ while running:
                     continue
                 elif lasso_button_rect.collidepoint(mx, my):
                     placement_mode = "select"
+                    continue
                 elif delete_button_rect.collidepoint(mx, my):
                     placement_mode = "delete"
                     clear_lasso_selection()
@@ -1440,37 +2376,69 @@ while running:
                     x = int((mx / zoom + camera_x) // GRID_SIZE)
                     y = int((my / zoom + camera_y) // GRID_SIZE)
                     if 0 <= x < grid_width and 0 <= y < grid_height:
+                        # Start dragging mode for placement
+                        dragging_placement = True
+                        
                         if placement_mode == "redstone":
                             grid[y][x] = {"type": "redstone", "powered": False}
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "bridge":
                             grid[y][x] = {"type": "bridge", "powered": False}
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "power":
                             grid[y][x] = {"type": "power", "powered": True}
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "or":
                             place_gate(x, y, "or", rotation)
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "and":
                             place_gate(x, y, "and", rotation)
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "not":
                             place_gate(x, y, "not", rotation)
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "xor":
                             place_gate(x, y, "xor", rotation)
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "nor":
                             place_gate(x, y, "nor", rotation)
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "nand":
                             place_gate(x, y, "nand", rotation)
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+                        elif placement_mode == "one_way":
+                            place_one_way(x, y, rotation)
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "clock":
                             frequency = 30
                             grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+                            grid[y][x] = {"type": "clock", "powered": False, "frequency": frequency, "timer": 0}
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
                         elif placement_mode == "delete":
                             cell = grid[y][x]
                             if cell["type"] == "gate":
@@ -1489,7 +2457,10 @@ while running:
                                                 grid[gy][gx] = {"type": "empty", "powered": False}
                             else:
                                 grid[y][x] = {"type": "empty", "powered": False}
-                            propagate_power()
+                            if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+                    
 
                 elif event.button == 3:
                     panning = True
@@ -1521,8 +2492,93 @@ while running:
                             load_component_to_grid(components_list[idx])
                             state = BUILD_MODE
 
+            elif state == PASTE_COMPONENT:
+                if 20 <= mx <= 100 and 20 <= my <= 60:  # Back button
+                    state = BUILD_MODE
+                    paste_mode = False
+                else:
+                    # Select component to paste
+                    idx = (my - 100) // 40
+                    if 0 <= idx < len(components_list):
+                        selected_component = components_list[idx]
+                        # Store the selected component and switch to placement mode
+                        selected_paste_component = selected_component
+                        state = BUILD_MODE
+                        paste_mode = False
+                        placement_mode = "paste_component"
+                        if selected_paste_component:
+                            # Check if component can be placed
+                            if can_place_component(selected_paste_component, x, y):
+                                place_component(selected_paste_component, x, y)
+                                if propagation_mode:
+                                    propagate_power()
+                                    propagate_power()
+                                print(f"Component '{selected_paste_component['name']}' placed at ({x}, {y})")
+                                # Reset to select mode after placing
+                                placement_mode = "select"
+                                selected_paste_component = None
+                            else:
+                                # Show error
+                                placement_error_timer = 60  # Show error for 60 frames
+                                print(f"Cannot place component at ({x}, {y})")
+                        else:
+                            print("No component selected for pasting!")
+                            placement_mode = "select"
+                        print(f"Selected '{selected_component['name']}' for pasting. Click where you want to place it.")
+
         elif event.type == pygame.MOUSEMOTION:
-            if placement_mode == "select" and lasso_start:
+            # Handle zoom slider dragging
+            if zoom_slider_dragging and zoom_bar_info and zoom_bar_info.get('visible', False):
+                mx, my = event.pos
+                slider_rect = zoom_bar_info['slider_track']
+                click_ratio = (mx - slider_rect.x) / slider_rect.width
+                click_ratio = max(0, min(1, click_ratio))  # Clamp to 0-1
+                min_zoom, max_zoom = 0.2, 3.0
+                target_zoom = min_zoom + click_ratio * (max_zoom - min_zoom)
+            # Handle placement dragging
+            elif dragging_placement and state == BUILD_MODE:
+                mx, my = event.pos
+                x = int((mx / zoom + camera_x) // GRID_SIZE)
+                y = int((my / zoom + camera_y) // GRID_SIZE)
+                if 0 <= x < grid_width and 0 <= y < grid_height:
+                    # Only place certain types while dragging (avoid gates which are multi-cell)
+                    if placement_mode == "redstone" and grid[y][x]["type"] == "empty":
+                        grid[y][x] = {"type": "redstone", "powered": False}
+                        if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+                    elif placement_mode == "bridge" and grid[y][x]["type"] == "empty":
+                        grid[y][x] = {"type": "bridge", "powered": False}
+                        if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+                    elif placement_mode == "power" and grid[y][x]["type"] == "empty":
+                        grid[y][x] = {"type": "power", "powered": True}
+                        if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+                    elif placement_mode == "delete" and grid[y][x]["type"] != "empty":
+                        cell = grid[y][x]
+                        if cell["type"] == "gate":
+                            gate_type = cell["gate_type"]
+                            local_pos = cell["local_pos"]
+                            gate_def = GATE_DEFINITIONS[gate_type]
+                            w, h = gate_def["size"]
+                            origin_x = x - local_pos[0]
+                            origin_y = y - local_pos[1]
+                            for dy in range(h):
+                                for dx in range(w):
+                                    gx = origin_x + dx
+                                    gy = origin_y + dy
+                                    if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                                        if grid[gy][gx].get("type") == "gate" and grid[gy][gx].get("gate_type") == gate_type:
+                                            grid[gy][gx] = {"type": "empty", "powered": False}
+                        else:
+                            grid[y][x] = {"type": "empty", "powered": False}
+                        if propagation_mode:
+                                propagate_power()
+                                propagate_power()
+            elif placement_mode == "select" and lasso_start:
                 lasso_end = (int((event.pos[0] / zoom + camera_x) // GRID_SIZE),
                              int((event.pos[1] / zoom + camera_y) // GRID_SIZE))
             elif panning:
@@ -1533,6 +2589,11 @@ while running:
                 last_mouse_x, last_mouse_y = event.pos
 
         elif event.type == pygame.MOUSEBUTTONUP:
+            # Stop zoom slider dragging
+            if event.button == 1:
+                zoom_slider_dragging = False
+                dragging_placement = False  # Stop placement dragging
+            
             if placement_mode == "select" and event.button == 1 and lasso_start:
                 x1, y1 = lasso_start
                 x2, y2 = lasso_end
