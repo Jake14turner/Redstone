@@ -4,10 +4,10 @@ import math
 import json
 
 # Try to enable hardware acceleration with improved settings
-os.environ['SDL_VIDEODRIVER'] = 'windows'  # Use native Windows driver for better performance
-os.environ['SDL_RENDER_DRIVER'] = 'direct3d'  # Use Direct3D on Windows
-os.environ['SDL_RENDER_SCALE_QUALITY'] = '1'  # Enable linear filtering
-os.environ['SDL_VIDEO_ACCELERATED'] = '1'  # Force hardware acceleration
+# os.environ['SDL_VIDEODRIVER'] = 'windows'  # Use native Windows driver for better performance
+# os.environ['SDL_RENDER_DRIVER'] = 'direct3d'  # Use Direct3D on Windows
+# os.environ['SDL_RENDER_SCALE_QUALITY'] = '1'  # Enable linear filtering
+# os.environ['SDL_VIDEO_ACCELERATED'] = '1'  # Force hardware acceleration
 
 #fixed d - latch logic
 COMPONENTS_FILE = "components.json"
@@ -70,9 +70,14 @@ def save_component(selected_cells, grid, name=None):
     print(f"Component '{name}' saved!")
 
 def load_components():
-    if not os.path.exists(COMPONENTS_FILE):
+    # Get the directory where this script is located
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    components_file = os.path.join(base_dir, "components.json")
+
+    if not os.path.exists(components_file):
         return []
-    with open(COMPONENTS_FILE, "r") as f:
+    
+    with open(components_file, "r") as f:
         return json.load(f)
 
 
@@ -106,7 +111,7 @@ last_mouse_x, last_mouse_y = 0, 0
 dragging_placement = False  # Track if we're dragging to place items
 
 
-grid_width = 500
+grid_width = 1000
 grid_height = 500
 
 grid = [[{"type": "empty", "powered": False, "frequency": None, "timer": 0} for _ in range(grid_width)] for _ in range(grid_height)]
