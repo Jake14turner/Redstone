@@ -1056,7 +1056,7 @@ def propagate_no_power(x, y, direction=None):
                 (0, -1)   
             ]
             input_directions = [
-                (-1, 0),  t
+                (-1, 0),  
                 (0, -1),  
                 (1, 0),   
                 (0, 1)    
