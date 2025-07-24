@@ -1048,7 +1048,7 @@ def propagate_no_power(x, y, direction=None):
                 rot = int(cell["type"][0])
             except (ValueError, IndexError):
                 rot = 0
-            
+            #    y: 303 
             output_directions = [
                 (1, 0),   
                 (0, 1),   
