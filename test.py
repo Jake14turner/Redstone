@@ -4,10 +4,10 @@ import math
 import json
 
 # # Try to enable hardware acceleration with improved settings
-# os.environ['SDL_VIDEODRIVER'] = 'windows'  # Use native Windows driver for better performance
-# os.environ['SDL_RENDER_DRIVER'] = 'direct3d'  # Use Direct3D on Windows
-# os.environ['SDL_RENDER_SCALE_QUALITY'] = '1'  # Enable linear filtering
-# os.environ['SDL_VIDEO_ACCELERATED'] = '1'  # Force hardware acceleration
+os.environ['SDL_VIDEODRIVER'] = 'windows'  # Use native Windows driver for better performance
+os.environ['SDL_RENDER_DRIVER'] = 'direct3d'  # Use Direct3D on Windows
+os.environ['SDL_RENDER_SCALE_QUALITY'] = '1'  # Enable linear filtering
+os.environ['SDL_VIDEO_ACCELERATED'] = '1'  # Force hardware acceleration
 
 #fixed d - latch logic
 COMPONENTS_FILE = "components.json"
